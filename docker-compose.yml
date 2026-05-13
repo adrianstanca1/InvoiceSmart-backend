@@ -42,7 +42,7 @@ services:
       db:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:3008/health"]
+      test: ["CMD", "curl", "-fsS", "http://localhost:3008/health"]
       interval: 10s
       timeout: 5s
       retries: 5
