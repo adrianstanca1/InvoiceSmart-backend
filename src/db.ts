@@ -84,6 +84,8 @@ export async function initSchema(): Promise<void> {
         status VARCHAR(50) DEFAULT 'draft',
         issue_date DATE,
         due_date DATE,
+        sent_at TIMESTAMP WITH TIME ZONE,
+        paid_at TIMESTAMP WITH TIME ZONE,
         subtotal DECIMAL(12,2) DEFAULT 0,
         tax_rate DECIMAL(5,2) DEFAULT 0,
         tax_amount DECIMAL(12,2) DEFAULT 0,

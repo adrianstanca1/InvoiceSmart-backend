@@ -8,7 +8,9 @@ router.use(authMiddleware);
 router.get('/', async (req: AuthenticatedRequest, res, next) => {
   try {
     const result = await query('SELECT * FROM tax_rules WHERE user_id = $1 ORDER BY name', [req.user!.id]);
-    res.json(result.rows);
+    const countRes = await query('SELECT COUNT(*)::int as total FROM tax_rules WHERE user_id = $1', [req.user!.id]);
+    const total = countRes.rows[0]?.total || 0;
+    res.json({ data: result.rows, pagination: { page: 1, limit: total, total, totalPages: 1 } });
   } catch (err) { next(err); }
 });
 

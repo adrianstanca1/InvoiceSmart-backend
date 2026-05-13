@@ -18,18 +18,29 @@ router.get('/', async (req: AuthenticatedRequest, res, next) => {
       params.push(status);
     }
     const result = await query(sql, params);
-    res.json(result.rows);
+    const countRes = await query('SELECT COUNT(*)::int as total FROM invoices WHERE user_id = $1', [userId]);
+    const total = countRes.rows[0]?.total || 0;
+    res.json({ data: result.rows, pagination: { page: 1, limit: total, total, totalPages: 1 } });
   } catch (err) { next(err); }
 });
 
 router.get('/:id', async (req: AuthenticatedRequest, res, next) => {
   try {
-    const invoiceResult = await query('SELECT * FROM invoices WHERE id = $1 AND user_id = $2', [req.params.id, req.user!.id]);
-    if (invoiceResult.rowCount === 0) { res.status(404).json({ error: 'Invoice not found' }); return; }
-    const invoice = invoiceResult.rows[0];
+    const result = await query('SELECT * FROM invoices WHERE id = $1 AND user_id = $2', [req.params.id, req.user!.id]);
+    if (result.rowCount === 0) { res.status(404).json({ error: 'Invoice not found' }); return; }
+    const invoice = result.rows[0];
     const linesResult = await query('SELECT * FROM invoice_line_items WHERE invoice_id = $1 ORDER BY sort_order', [req.params.id]);
     const transactionsResult = await query('SELECT * FROM transactions WHERE invoice_id = $1 ORDER BY transaction_date DESC', [req.params.id]);
     res.json({ ...invoice, line_items: linesResult.rows, transactions: transactionsResult.rows });
+  } catch (err) { next(err); }
+});
+
+router.get('/next/number', async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const prefix = (req.query.prefix as string) || 'INV';
+    const autoIncrement = req.query.autoIncrement !== 'false';
+    const invoiceNumber = await generateInvoiceNumber(prefix, autoIncrement, req.user!.id);
+    res.json({ invoiceNumber });
   } catch (err) { next(err); }
 });
 
