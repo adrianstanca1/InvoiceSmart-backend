@@ -139,6 +139,10 @@ export function availableProviders(): Array<{ provider: string; requiresApiKey: 
   ];
 }
 
+export function isSupportedProvider(provider: string): boolean {
+  return ['ollama', 'openai', 'openai-compatible', 'openrouter'].includes(normalizeProvider(provider));
+}
+
 function normalizeProvider(provider: string): string {
   const normalized = provider.trim().toLowerCase();
   if (normalized === 'custom') return 'openai-compatible';

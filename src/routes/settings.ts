@@ -60,7 +60,7 @@ router.get('/', async (req: AuthenticatedRequest, res, next) => {
     const rows = result.rows;
     const obj: Record<string, any> = {};
     rows.forEach((r: any) => { try { obj[r.key] = JSON.parse(r.value); } catch { obj[r.key] = r.value; } });
-    res.json({ ...defaultSettings, ...obj });
+    res.json(maskSensitiveSettings({ ...defaultSettings, ...obj }));
   } catch (err) { next(err); }
 });
 
@@ -77,7 +77,7 @@ router.post('/', async (req: AuthenticatedRequest, res, next) => {
        ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW() RETURNING *`,
       [req.user!.id, key, typeof value === 'string' ? value : JSON.stringify(value)]
     );
-    res.json(result.rows[0]);
+    res.json(maskSensitiveSettingRow(result.rows[0]));
   } catch (err) { next(err); }
 });
 
@@ -106,7 +106,7 @@ router.put('/', async (req: AuthenticatedRequest, res, next) => {
     const result = await query('SELECT * FROM settings WHERE user_id = $1', [req.user!.id]);
     const obj: Record<string, any> = {};
     result.rows.forEach((r: any) => { try { obj[r.key] = JSON.parse(r.value); } catch { obj[r.key] = r.value; } });
-    res.json({ ...defaultSettings, ...obj });
+    res.json(maskSensitiveSettings({ ...defaultSettings, ...obj }));
   } catch (err) { next(err); }
 });
 
@@ -127,3 +127,13 @@ router.post('/upload-receipt', async (req: AuthenticatedRequest, res, next) => {
 });
 
 export default router;
+
+function maskSensitiveSettings(settings: Record<string, any>): Record<string, any> {
+  if (!settings.aiApiKey) return settings;
+  return { ...settings, aiApiKey: '********' };
+}
+
+function maskSensitiveSettingRow(row: any): any {
+  if (row?.key !== 'aiApiKey') return row;
+  return { ...row, value: '********' };
+}

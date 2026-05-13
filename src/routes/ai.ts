@@ -4,8 +4,10 @@ import { authMiddleware, AuthenticatedRequest } from '../middleware';
 import {
   ChatMessage,
   availableProviders,
+  assertEndpointAllowed,
   completeWithUserSettings,
   extractJsonObject,
+  isSupportedProvider,
   listModels,
   resolveAiConfig,
 } from '../services/intelligence';
@@ -15,6 +17,40 @@ router.use(authMiddleware);
 
 router.get('/config', async (req: AuthenticatedRequest, res, next) => {
   try {
+    const config = await resolveAiConfig(req.user!.id);
+    res.json({
+      provider: config.provider,
+      model: config.model,
+      endpoint: config.endpoint,
+      hasApiKey: Boolean(config.apiKey),
+      providers: availableProviders(),
+    });
+  } catch (err) { next(err); }
+});
+
+router.put('/config', async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const updates = pickAiConfigUpdates(req.body);
+    if (Object.keys(updates).length === 0) {
+      res.status(400).json({ error: 'No AI config fields provided' });
+      return;
+    }
+    if (updates.aiProvider && !isSupportedProvider(updates.aiProvider)) {
+      res.status(400).json({ error: `Unsupported AI provider: ${updates.aiProvider}` });
+      return;
+    }
+    if (updates.aiEndpoint) {
+      assertEndpointAllowed(updates.aiEndpoint);
+    }
+
+    for (const [key, value] of Object.entries(updates)) {
+      await query(
+        `INSERT INTO settings (user_id, key, value) VALUES ($1,$2,$3)
+         ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+        [req.user!.id, key, value]
+      );
+    }
+
     const config = await resolveAiConfig(req.user!.id);
     res.json({
       provider: config.provider,
@@ -191,6 +227,19 @@ function aiOverrides(body: any): { provider?: string; model?: string; endpoint?:
     endpoint: typeof body?.endpoint === 'string' ? body.endpoint : undefined,
     apiKey: typeof body?.apiKey === 'string' ? body.apiKey : undefined,
   };
+}
+
+function pickAiConfigUpdates(body: any): Record<string, string> {
+  const updates: Record<string, string> = {};
+  if (typeof body?.provider === 'string') updates.aiProvider = body.provider;
+  if (typeof body?.aiProvider === 'string') updates.aiProvider = body.aiProvider;
+  if (typeof body?.model === 'string') updates.aiModel = body.model;
+  if (typeof body?.aiModel === 'string') updates.aiModel = body.aiModel;
+  if (typeof body?.endpoint === 'string') updates.aiEndpoint = body.endpoint;
+  if (typeof body?.aiEndpoint === 'string') updates.aiEndpoint = body.aiEndpoint;
+  if (typeof body?.apiKey === 'string' && body.apiKey !== '********') updates.aiApiKey = body.apiKey;
+  if (typeof body?.aiApiKey === 'string' && body.aiApiKey !== '********') updates.aiApiKey = body.aiApiKey;
+  return updates;
 }
 
 function normalizeMessages(body: any): ChatMessage[] {

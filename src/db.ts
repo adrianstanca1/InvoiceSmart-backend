@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { Pool, PoolClient, QueryResult } from 'pg';
 
 export const pool = new Pool({
