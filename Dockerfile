@@ -13,25 +13,28 @@ RUN npm run build
 FROM node:22-slim AS production
 WORKDIR /app
 
-# Install system dependencies required by Puppeteer Chromium
+# Install curl for Docker HEALTHCHECK (wget may not be available)
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-       ca-certificates fonts-liberation libnss3 \
-       libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 \
-       libxcomposite1 libxdamage1 libxrandr2 libgbm1 \
-       libpango-1.0-0 libxshmfence1 libxss1 libasound2 \
-       libxtst6 libxfixes3 xdg-utils wget libu2f-udev \
-       libglib2.0-0 libgtk-3-0 libnspr4 libcurl4 \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=false
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+# Create non-root user and group
+RUN groupadd -r nodejs && useradd -r -g nodejs node
 
 COPY package*.json ./
 RUN npm ci --omit=dev
 
 COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/public ./public
 
-EXPOSE 3002
+# Switch to non-root user
+USER node
+
+EXPOSE 3008
 ENV NODE_ENV=production
+ENV PORT=3008
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD curl -fsS http://localhost:3008/health || exit 1
+
 CMD ["node", "dist/index.js"]

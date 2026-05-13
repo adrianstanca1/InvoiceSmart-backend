@@ -15,6 +15,19 @@ export interface InvoiceTotals {
   totalAmount: number;
 }
 
+// Advisory lock key space for invoice number generation.
+// Hash the userId + prefix into a 64-bit bigint safe for pg_advisory_lock.
+function advisoryLockKey(userId: string, prefix: string): number {
+  let hash = 0;
+  const str = userId + ':' + prefix;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash + char) | 0;
+  }
+  // Force positive and within 31-bit safe int range
+  return Math.abs(hash) % 2_147_483_647;
+}
+
 export async function generateInvoiceNumber(
   prefix: string,
   autoIncrement: boolean,
@@ -24,16 +37,25 @@ export async function generateInvoiceNumber(
     return `${prefix}-${Date.now()}`;
   }
 
-  const result = await query(
-    `SELECT COUNT(*)::int AS count FROM invoices WHERE user_id = $1 AND invoice_number LIKE $2`,
-    [userId, `${prefix}-%`]
-  );
+  // Use a per-user+prefix advisory lock to prevent race conditions.
+  const lockId = advisoryLockKey(userId, prefix);
+  await query('SELECT pg_advisory_lock($1)', [lockId]);
 
-  const count = result.rows[0]?.count || 0;
-  const nextNumber = count + 1;
-  const paddedNumber = nextNumber.toString().padStart(4, '0');
+  try {
+    const result = await query(
+      `SELECT COUNT(*)::int AS count FROM invoices WHERE user_id = $1 AND invoice_number LIKE $2`,
+      [userId, `${prefix}-%`]
+    );
 
-  return `${prefix}-${paddedNumber}`;
+    const count = result.rows[0]?.count || 0;
+    const nextNumber = count + 1;
+    const paddedNumber = nextNumber.toString().padStart(4, '0');
+
+    return `${prefix}-${paddedNumber}`;
+  } finally {
+    // Always release the lock, even on error.
+    await query('SELECT pg_advisory_unlock($1)', [lockId]).catch(() => {});
+  }
 }
 
 export function calculateInvoiceTotals(

@@ -168,6 +168,28 @@ function providerApiKey(provider: string): string | undefined {
   return process.env.AI_API_KEY;
 }
 
+async function withRetry<T>(fn: () => Promise<T>, retries = 3, delayMs = 500): Promise<T> {
+  let lastErr: Error | undefined;
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fn();
+    } catch (err) {
+      lastErr = err instanceof Error ? err : new Error(String(err));
+      const isRetryable =
+        lastErr.message.includes('502') ||
+        lastErr.message.includes('503') ||
+        lastErr.message.includes('504') ||
+        lastErr.message.includes('ECONNREFUSED') ||
+        lastErr.message.includes('ETIMEDOUT') ||
+        lastErr.message.includes('abort') ||
+        lastErr.message.includes('fetch failed');
+      if (!isRetryable || i === retries - 1) throw lastErr;
+      await new Promise((r) => setTimeout(r, delayMs * Math.pow(2, i)));
+    }
+  }
+  throw lastErr!;
+}
+
 async function completeOllama(messages: ChatMessage[], config: AiConfig): Promise<string> {
   const endpoint = config.endpoint || providerDefaultEndpoint('ollama');
   const prompt = messages.map((message) => `${message.role.toUpperCase()}: ${message.content}`).join('\n\n');
@@ -175,7 +197,7 @@ async function completeOllama(messages: ChatMessage[], config: AiConfig): Promis
     ? { model: config.model, messages, stream: false }
     : { model: config.model, prompt, stream: false };
 
-  const data = await postJson(endpoint, body, {});
+  const data = await withRetry(() => postJson(endpoint, body, {}));
   const content = data.response || data.message?.content;
   if (typeof content !== 'string') {
     throw new Error('Ollama response did not include text content');
@@ -191,11 +213,13 @@ async function completeOpenAiCompatible(messages: ChatMessage[], config: AiConfi
   const headers: Record<string, string> = {};
   if (config.apiKey) headers.Authorization = `Bearer ${config.apiKey}`;
 
-  const data = await postJson(config.endpoint || providerDefaultEndpoint(config.provider), {
-    model: config.model,
-    messages,
-    temperature: 0.2,
-  }, headers);
+  const data = await withRetry(() =>
+    postJson(config.endpoint || providerDefaultEndpoint(config.provider), {
+      model: config.model,
+      messages,
+      temperature: 0.2,
+    }, headers)
+  );
 
   const content = data.choices?.[0]?.message?.content;
   if (typeof content !== 'string') {

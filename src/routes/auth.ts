@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { query } from '../db';
 import { authMiddleware, AuthenticatedRequest, JWT_SECRET } from '../middleware';
+import { writeAudit } from '../lib/audit';
 
 const router = Router();
 
@@ -30,6 +31,14 @@ router.post('/register', async (req, res, next) => {
     );
     const user = result.rows[0];
     const token = signToken(user.id, user.email);
+    await writeAudit({
+      userId: user.id,
+      entityType: 'user',
+      entityId: user.id,
+      action: 'register',
+      ipAddress: req.ip || req.socket.remoteAddress,
+      userAgent: req.headers['user-agent'],
+    });
     res.status(201).json({ token, user: { id: user.id, email: user.email } });
   } catch (err) { next(err); }
 });
@@ -53,6 +62,14 @@ router.post('/login', async (req, res, next) => {
       return;
     }
     const token = signToken(user.id, user.email);
+    await writeAudit({
+      userId: user.id,
+      entityType: 'user',
+      entityId: user.id,
+      action: 'login',
+      ipAddress: req.ip || req.socket.remoteAddress,
+      userAgent: req.headers['user-agent'],
+    });
     res.json({ token, user: { id: user.id, email: user.email } });
   } catch (err) { next(err); }
 });

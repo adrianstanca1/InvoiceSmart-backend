@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>InvoiceSmart — AI Invoicing</title>
+  <style>
+    :root { --primary:#2563EB; --bg:#f8fafc; --card:#fff; --text:#1e293b; --border:#e2e8f0; }
+    *{box-sizing:border-box;margin:0;padding:0;font-family:system-ui,-apple-system,sans-serif;}
+    body{background:var(--bg);color:var(--text);line-height:1.5;}
+    .container{max-width:1200px;margin:0 auto;padding:20px;}
+    header{background:var(--primary);color:#fff;padding:16px 20px;border-radius:8px;margin-bottom:20px;display:flex;justify-content:space-between;align-items:center;}
+    header h1{font-size:1.25rem;}
+    .btn{background:var(--primary);color:#fff;border:none;padding:8px 16px;border-radius:6px;cursor:pointer;font-size:0.9rem;}
+    .btn:hover{opacity:0.9;}
+    .btn.secondary{background:#64748b;}
+    .btn.danger{background:#dc2626;}
+    .card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:20px;margin-bottom:16px;box-shadow:0 1px 3px rgba(0,0,0,0.05);}
+    .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;}
+    label{display:block;font-size:0.85rem;font-weight:600;margin-bottom:4px;color:#475569;}
+    input,select,textarea{width:100%;padding:8px 12px;border:1px solid var(--border);border-radius:6px;font-size:0.9rem;margin-bottom:12px;}
+    textarea{min-height:80px;resize:vertical;}
+    table{width:100%;border-collapse:collapse;font-size:0.9rem;}
+    th,td{text-align:left;padding:10px;border-bottom:1px solid var(--border);}
+    th{color:#64748b;font-size:0.8rem;text-transform:uppercase;}
+    .badge{display:inline-block;padding:2px 8px;border-radius:999px;font-size:0.75rem;font-weight:600;}
+    .badge.draft{background:#e2e8f0;color:#475569;}
+    .badge.sent{background:#dbeafe;color:#1d4ed8;}
+    .badge.partial{background:#fef3c7;color:#92400e;}
+    .badge.paid{background:#d1fae5;color:#065f46;}
+    .hidden{display:none !important;}
+    .tabs{display:flex;gap:4px;margin-bottom:16px;border-bottom:2px solid var(--border);}
+    .tab{padding:10px 16px;cursor:pointer;border-bottom:2px solid transparent;color:#64748b;font-size:0.9rem;}
+    .tab.active{border-color:var(--primary);color:var(--primary);font-weight:600;}
+    .error{color:#dc2626;font-size:0.85rem;margin-top:-8px;margin-bottom:12px;}
+    .success{color:#059669;font-size:0.85rem;margin-top:-8px;margin-bottom:12px;}
+    .row{display:flex;gap:12px;}
+    .row > *{flex:1;}
+    .line-item-row{display:flex;gap:8px;align-items:flex-end;margin-bottom:8px;}
+    .line-item-row input{flex:2;}
+    .line-item-row input.qty{flex:0.5;}
+    .line-item-row input.price{flex:1;}
+    .line-item-row .btn.danger{flex:0;padding:8px 10px;}
+    #aiResponse{background:#f1f5f9;padding:12px;border-radius:6px;white-space:pre-wrap;font-size:0.85rem;max-height:300px;overflow:auto;}
+    .loading{opacity:0.6;pointer-events:none;}
+    .total-row{display:flex;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);font-size:0.9rem;}
+    .total-row.grand{font-size:1.1rem;font-weight:700;border-top:2px solid var(--primary);border-bottom:none;padding-top:12px;margin-top:8px;}
+  </style>
+</head>
+<body>
+<div class="container">
+  <header>
+    <h1>🧾 InvoiceSmart — AI-Powered Invoicing</h1>
+    <div id="userBar" class="hidden">
+      <span id="userEmail"></span>
+      <button class="btn secondary" onclick="logout()">Logout</button>
+    </div>
+  </header>
+
+  <!-- Auth Screen -->
+  <div id="authScreen" class="card">
+    <div class="tabs">
+      <div class="tab active" onclick="showAuth('login')">Login</div>
+      <div class="tab" onclick="showAuth('register')">Register</div>
+    </div>
+    <form id="loginForm" onsubmit="handleLogin(event)">
+      <label>Email</label><input type="email" id="loginEmail" required>
+      <label>Password</label><input type="password" id="loginPassword" required>
+      <button class="btn" type="submit">Login</button>
+      <div class="error" id="loginError"></div>
+    </form>
+    <form id="registerForm" class="hidden" onsubmit="handleRegister(event)">
+      <label>Email</label><input type="email" id="regEmail" required>
+      <label>Password</label><input type="password" id="regPassword" required minlength="6">
+      <label>First Name</label><input type="text" id="regFirstName">
+      <label>Last Name</label><input type="text" id="regLastName">
+      <label>Company</label><input type="text" id="regCompany">
+      <button class="btn" type="submit">Register</button>
+      <div class="error" id="regError"></div>
+    </form>
+  </div>
+
+  <!-- Main App -->
+  <div id="appScreen" class="hidden">
+    <div class="tabs">
+      <div class="tab active" onclick="showTab('invoices')">Invoices</div>
+      <div class="tab" onclick="showTab('clients')">Clients</div>
+      <div class="tab" onclick="showTab('create')">+ New Invoice</div>
+      <div class="tab" onclick="showTab('ai')">🤖 AI Accountant</div>
+      <div class="tab" onclick="showTab('reports')">Reports</div>
+    </div>
+
+    <!-- Invoices List -->
+    <div id="tab-invoices">
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+          <h3>Your Invoices</h3>
+          <select id="invoiceFilter" onchange="loadInvoices()">
+            <option value="">All</option>
+            <option value="draft">Draft</option>
+            <option value="sent">Sent</option>
+            <option value="partial">Partial</option>
+            <option value="paid">Paid</option>
+          </select>
+        </div>
+        <div id="invoicesList"><p>Loading...</p></div>
+      </div>
+    </div>
+
+    <!-- Clients -->
+    <div id="tab-clients" class="hidden">
+      <div class="card">
+        <div class="row">
+          <div>
+            <label>New Client Name</label>
+            <input type="text" id="clientName" placeholder="Acme Construction Ltd">
+            <label>Email</label>
+            <input type="email" id="clientEmail" placeholder="billing@acme.com">
+            <button class="btn" onclick="createClient()">Add Client</button>
+            <div class="error" id="clientError"></div>
+          </div>
+          <div>
+            <h3>Existing Clients</h3>
+            <div id="clientsList"><p>Loading...</p></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Create Invoice -->
+    <div id="tab-create" class="hidden">
+      <div class="card">
+        <form id="invoiceForm" onsubmit="createInvoice(event)">
+          <div class="row">
+            <div>
+              <label>Client</label>
+              <select id="invClient" required><option value="">Select client...</option></select>
+            </div>
+            <div>
+              <label>Invoice Number</label>
+              <input type="text" id="invNumber" placeholder="INV-001" required>
+            </div>
+          </div>
+          <div class="row">
+            <div>
+              <label>Issue Date</label>
+              <input type="date" id="invDate" required>
+            </div>
+            <div>
+              <label>Due Date</label>
+              <input type="date" id="invDueDate" required>
+            </div>
+          </div>
+          <label>Line Items</label>
+          <div id="lineItems">
+            <div class="line-item-row">
+              <input type="text" placeholder="Description" class="li-desc" required>
+              <input type="number" placeholder="Qty" class="li-qty qty" value="1" min="0" step="0.1" required>
+              <input type="number" placeholder="Unit Price" class="li-price price" min="0" step="0.01" required>
+              <button type="button" class="btn danger" onclick="removeLineItem(this)">×</button>
+            </div>
+          </div>
+          <button type="button" class="btn secondary" onclick="addLineItem()" style="margin-bottom:12px;">+ Add Line Item</button>
+
+          <div class="row">
+            <div>
+              <label>Tax Rate (%)</label>
+              <input type="number" id="invTaxRate" value="20" min="0" max="100" step="0.01">
+            </div>
+            <div>
+              <label>Discount (%)</label>
+              <input type="number" id="invDiscount" value="0" min="0" max="100" step="0.01">
+            </div>
+          </div>
+
+          <label>Notes</label>
+          <textarea id="invNotes" placeholder="Payment terms, bank details, etc."></textarea>
+
+          <button class="btn" type="submit">Create Invoice</button>
+          <div class="error" id="invError"></div>
+          <div class="success" id="invSuccess"></div>
+        </form>
+      </div>
+    </div>
+
+    <!-- AI Accountant -->
+    <div id="tab-ai" class="hidden">
+      <div class="card">
+        <h3>🤖 AI Accountant (Local Ollama)</h3>
+        <p style="font-size:0.85rem;color:#64748b;margin-bottom:12px;">Powered by your local Ollama model. Ask anything about your invoices, taxes, or cashflow.</p>
+        <label>Your Question</label>
+        <textarea id="aiPrompt" placeholder="Summarize my outstanding invoices and suggest payment reminders..."></textarea>
+        <div style="display:flex;gap:8px;margin-bottom:12px;">
+          <button class="btn" onclick="askAI('chat')">Ask AI</button>
+          <button class="btn secondary" onclick="askAI('summarize-pl')">Summarize P&L</button>
+          <button class="btn secondary" onclick="askAI('who-owes-me')">Who Owes Me?</button>
+          <button class="btn secondary" onclick="askAI('tax-advice')">Tax Advice</button>
+        </div>
+        <div id="aiResponse">AI response will appear here...</div>
+      </div>
+    </div>
+
+    <!-- Reports -->
+    <div id="tab-reports" class="hidden">
+      <div class="grid">
+        <div class="card"><h3>Dashboard</h3><div id="dashReport"></div></div>
+        <div class="card"><h3>Revenue Trend</h3><div id="revReport"></div></div>
+        <div class="card"><h3>Profit & Loss</h3><div id="plReport"></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const API = '';
+let token = localStorage.getItem('token') || '';
+
+function authHeaders() {
+  return { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' };
+}
+
+async function apiPost(path, body) {
+  const r = await fetch(API + path, { method: 'POST', headers: authHeaders(), body: JSON.stringify(body) });
+  const d = await r.json().catch(()=>({}));
+  if (!r.ok) throw new Error(d.error || r.statusText);
+  return d;
+}
+async function apiGet(path) {
+  const r = await fetch(API + path, { headers: authHeaders() });
+  const d = await r.json().catch(()=>({}));
+  if (!r.ok) throw new Error(d.error || r.statusText);
+  return d;
+}
+
+function showAuth(t) {
+  document.querySelectorAll('.tab').forEach((el,i)=>el.classList.toggle('active', i===(t==='login'?0:1)));
+  document.getElementById('loginForm').classList.toggle('hidden', t!=='login');
+  document.getElementById('registerForm').classList.toggle('hidden', t!=='register');
+}
+
+async function handleLogin(e) {
+  e.preventDefault();
+  const btn = e.target.querySelector('button'); btn.classList.add('loading');
+  try {
+    const data = await apiPost('/api/auth/login', { email: document.getElementById('loginEmail').value, password: document.getElementById('loginPassword').value });
+    token = data.token;
+    localStorage.setItem('token', token);
+    showApp(data.user.email);
+  } catch(err) { document.getElementById('loginError').textContent = err.message; }
+  finally { btn.classList.remove('loading'); }
+}
+
+async function handleRegister(e) {
+  e.preventDefault();
+  const btn = e.target.querySelector('button'); btn.classList.add('loading');
+  try {
+    const data = await apiPost('/api/auth/register', {
+      email: document.getElementById('regEmail').value,
+      password: document.getElementById('regPassword').value,
+      first_name: document.getElementById('regFirstName').value,
+      last_name: document.getElementById('regLastName').value,
+      company_name: document.getElementById('regCompany').value,
+    });
+    token = data.token;
+    localStorage.setItem('token', token);
+    showApp(data.user.email);
+  } catch(err) { document.getElementById('regError').textContent = err.message; }
+  finally { btn.classList.remove('loading'); }
+}
+
+function logout() {
+  token = '';
+  localStorage.removeItem('token');
+  location.reload();
+}
+
+function showApp(email) {
+  document.getElementById('authScreen').classList.add('hidden');
+  document.getElementById('appScreen').classList.remove('hidden');
+  document.getElementById('userBar').classList.remove('hidden');
+  document.getElementById('userEmail').textContent = email;
+  loadInvoices(); loadClients(); loadReports();
+  document.getElementById('invDate').valueAsDate = new Date();
+  const due = new Date(); due.setDate(due.getDate()+30);
+  document.getElementById('invDueDate').valueAsDate = due;
+}
+
+function showTab(name) {
+  ['invoices','clients','create','ai','reports'].forEach(t => {
+    document.getElementById('tab-'+t).classList.toggle('hidden', t!==name);
+  });
+  document.querySelectorAll('.tab').forEach((el,i)=>{
+    const tabs=['invoices','clients','create','ai','reports'];
+    el.classList.toggle('active', tabs[i]===name);
+  });
+  if (name==='reports') loadReports();
+}
+
+async function loadInvoices() {
+  const filter = document.getElementById('invoiceFilter').value;
+  const url = filter ? '/api/invoices?status='+filter : '/api/invoices';
+  try {
+    const data = await apiGet(url);
+    const list = document.getElementById('invoicesList');
+    if (!data.data || data.data.length===0) { list.innerHTML = '<p>No invoices yet.</p>'; return; }
+    let html = '<table><tr><th>#</th><th>Client</th><th>Amount</th><th>Status</th><th>Date</th></tr>';
+    data.data.forEach(inv => {
+      html += `<tr>
+        <td>${inv.invoice_number}</td>
+        <td>${inv.client_name || '-'}</td>
+        <td>£${inv.total_amount}</td>
+        <td><span class="badge ${inv.status}">${inv.status}</span></td>
+        <td>${inv.issue_date?.slice(0,10)||'-'}</td>
+      </tr>`;
+    });
+    html += '</table>';
+    list.innerHTML = html;
+  } catch(err) { document.getElementById('invoicesList').innerHTML = '<p class="error">'+err.message+'</p>'; }
+}
+
+async function loadClients() {
+  try {
+    const data = await apiGet('/api/clients');
+    const list = document.getElementById('clientsList');
+    const sel = document.getElementById('invClient');
+    if (!data.data || data.data.length===0) { list.innerHTML = '<p>No clients yet.</p>'; }
+    else {
+      list.innerHTML = '<ul>'+data.data.map(c=>`<li>${c.name} <span style="color:#64748b">${c.email||''}</span></li>`).join('')+'</ul>';
+    }
+    sel.innerHTML = '<option value="">Select client...</option>';
+    (data.data||[]).forEach(c=>{ sel.innerHTML += `<option value="${c.id}">${c.name}</option>`; });
+  } catch(err) { document.getElementById('clientsList').innerHTML = '<p class="error">'+err.message+'</p>'; }
+}
+
+async function createClient() {
+  try {
+    await apiPost('/api/clients', { name: document.getElementById('clientName').value, email: document.getElementById('clientEmail').value });
+    document.getElementById('clientError').textContent = '';
+    document.getElementById('clientName').value = '';
+    document.getElementById('clientEmail').value = '';
+    loadClients();
+  } catch(err) { document.getElementById('clientError').textContent = err.message; }
+}
+
+function addLineItem() {
+  const div = document.createElement('div');
+  div.className = 'line-item-row';
+  div.innerHTML = `
+    <input type="text" placeholder="Description" class="li-desc" required>
+    <input type="number" placeholder="Qty" class="li-qty qty" value="1" min="0" step="0.1" required>
+    <input type="number" placeholder="Unit Price" class="li-price price" min="0" step="0.01" required>
+    <button type="button" class="btn danger" onclick="removeLineItem(this)">×</button>`;
+  document.getElementById('lineItems').appendChild(div);
+}
+function removeLineItem(btn) { btn.parentElement.remove(); }
+
+async function createInvoice(e) {
+  e.preventDefault();
+  const rows = document.querySelectorAll('#lineItems .line-item-row');
+  const lineItems = [];
+  rows.forEach(row => {
+    lineItems.push({
+      description: row.querySelector('.li-desc').value,
+      quantity: parseFloat(row.querySelector('.li-qty').value),
+      unit_price: parseFloat(row.querySelector('.li-price').value),
+    });
+  });
+  try {
+    await apiPost('/api/invoices', {
+      client_id: document.getElementById('invClient').value,
+      invoice_number: document.getElementById('invNumber').value,
+      issue_date: document.getElementById('invDate').value,
+      due_date: document.getElementById('invDueDate').value,
+      tax_rate: parseFloat(document.getElementById('invTaxRate').value),
+      discount_rate: parseFloat(document.getElementById('invDiscount').value),
+      notes: document.getElementById('invNotes').value,
+      line_items: lineItems,
+    });
+    document.getElementById('invSuccess').textContent = 'Invoice created successfully!';
+    document.getElementById('invError').textContent = '';
+    document.getElementById('invoiceForm').reset();
+    setTimeout(()=>showTab('invoices'), 800);
+    loadInvoices();
+  } catch(err) { document.getElementById('invError').textContent = err.message; document.getElementById('invSuccess').textContent = ''; }
+}
+
+async function askAI(type) {
+  const btn = document.querySelector('#tab-ai .btn');
+  if (btn) btn.classList.add('loading');
+  document.getElementById('aiResponse').textContent = 'Thinking...';
+  try {
+    let data;
+    const prompt = document.getElementById('aiPrompt').value;
+    if (type === 'chat') {
+      data = await apiPost('/api/ai/chat', { messages: [{ role: 'user', content: prompt || 'Give me a business summary' }] });
+      document.getElementById('aiResponse').textContent = data.content || JSON.stringify(data, null, 2);
+    } else {
+      data = await apiGet('/api/ai/' + type);
+      document.getElementById('aiResponse').textContent = JSON.stringify(data, null, 2);
+    }
+  } catch(err) { document.getElementById('aiResponse').textContent = 'Error: ' + err.message; }
+  finally { if (btn) btn.classList.remove('loading'); }
+}
+
+async function loadReports() {
+  try {
+    const dash = await apiGet('/api/reports/dashboard');
+    document.getElementById('dashReport').innerHTML = `
+      <p><strong>Total Revenue:</strong> £${dash.totalRevenue || 0}</p>
+      <p><strong>Outstanding:</strong> £${dash.outstandingAmount || 0}</p>
+      <p><strong>Invoices:</strong> ${dash.invoiceCount || 0}</p>
+      <p><strong>Clients:</strong> ${dash.clientCount || 0}</p>`;
+  } catch(e) { document.getElementById('dashReport').innerHTML = '<p class="error">'+e.message+'</p>'; }
+  try {
+    const pl = await apiGet('/api/reports/profit-loss');
+    document.getElementById('plReport').innerHTML = `
+      <p><strong>Revenue:</strong> £${pl.revenue || 0}</p>
+      <p><strong>Expenses:</strong> £${pl.expenses || 0}</p>
+      <p><strong>Net Profit:</strong> £${pl.netProfit || 0}</p>`;
+  } catch(e) { document.getElementById('plReport').innerHTML = '<p class="error">'+e.message+'</p>'; }
+}
+
+// Auto-login if token exists
+if (token) {
+  apiGet('/api/auth/me').then(u=>showApp(u.email)).catch(()=>localStorage.removeItem('token'));
+}
+</script>
+</body>
+</html>

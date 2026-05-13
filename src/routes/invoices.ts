@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { query, transaction } from '../db';
 import { applyUuidValidation, authMiddleware, AuthenticatedRequest } from '../middleware';
 import { calculateInvoiceTotals, generateInvoiceNumber } from '../utils';
+import { writeAudit } from '../lib/audit';
 
 const router = Router();
 
@@ -79,6 +80,16 @@ router.post('/', async (req: AuthenticatedRequest, res, next) => {
       }
     }
 
+    await writeAudit({
+      userId,
+      entityType: 'invoice',
+      entityId: invoice.id,
+      action: 'create',
+      newValues: invoice,
+      ipAddress: req.ip || req.socket.remoteAddress,
+      userAgent: req.headers['user-agent'],
+    });
+
     res.status(201).json(invoice);
   } catch (err) { next(err); }
 });
@@ -111,6 +122,17 @@ router.put('/:id', async (req: AuthenticatedRequest, res, next) => {
       }
     }
 
+    await writeAudit({
+      userId,
+      entityType: 'invoice',
+      entityId: invoice.id,
+      action: 'update',
+      oldValues: existing.rows[0],
+      newValues: invoice,
+      ipAddress: req.ip || req.socket.remoteAddress,
+      userAgent: req.headers['user-agent'],
+    });
+
     res.json(invoice);
   } catch (err) { next(err); }
 });
@@ -119,6 +141,14 @@ router.post('/:id/send', async (req: AuthenticatedRequest, res, next) => {
   try {
     const result = await query("UPDATE invoices SET status = 'sent', sent_at = NOW(), updated_at = NOW() WHERE id = $1 AND user_id = $2 RETURNING id", [req.params.id, req.user!.id]);
     if (result.rowCount === 0) { res.status(404).json({ error: 'Invoice not found' }); return; }
+    await writeAudit({
+      userId: req.user!.id,
+      entityType: 'invoice',
+      entityId: req.params.id,
+      action: 'send',
+      ipAddress: req.ip || req.socket.remoteAddress,
+      userAgent: req.headers['user-agent'],
+    });
     res.json({ success: true, status: 'sent' });
   } catch (err) { next(err); }
 });
@@ -127,22 +157,39 @@ router.patch('/:id/paid', async (req: AuthenticatedRequest, res, next) => {
   try {
     const result = await query("UPDATE invoices SET status = 'paid', amount_paid = total_amount, amount_due = 0, paid_at = NOW(), updated_at = NOW() WHERE id = $1 AND user_id = $2 RETURNING *", [req.params.id, req.user!.id]);
     if (result.rowCount === 0) { res.status(404).json({ error: 'Invoice not found' }); return; }
+    await writeAudit({
+      userId: req.user!.id,
+      entityType: 'invoice',
+      entityId: req.params.id,
+      action: 'mark_paid',
+      newValues: result.rows[0],
+      ipAddress: req.ip || req.socket.remoteAddress,
+      userAgent: req.headers['user-agent'],
+    });
     res.json(result.rows[0]);
   } catch (err) { next(err); }
 });
 
 router.get('/:id/pdf', async (req: AuthenticatedRequest, res, next) => {
   try {
-    // Ownership check before returning any invoice-derived data.
-    // The current stub returns a placeholder URL; when a real PDF
-    // generator lands, it must use the same WHERE id=$1 AND user_id=$2
-    // pattern (already used by /:id/paid, /:id/payments, DELETE).
     const result = await query(
-      'SELECT id FROM invoices WHERE id = $1 AND user_id = $2',
+      `SELECT i.*, c.name as client_name, c.email as client_email, c.company_name as client_company,
+              c.vat_number as client_vat, c.address as client_address, c.phone as client_phone
+       FROM invoices i
+       LEFT JOIN clients c ON c.id = i.client_id
+       WHERE i.id = $1 AND i.user_id = $2`,
       [req.params.id, req.user!.id]
     );
     if (result.rowCount === 0) { res.status(404).json({ error: 'Invoice not found' }); return; }
-    res.json({ url: 'https://demo.pdf' });
+    const invoice = result.rows[0];
+
+    const linesResult = await query('SELECT * FROM invoice_line_items WHERE invoice_id = $1 ORDER BY sort_order', [req.params.id]);
+    const userResult = await query('SELECT first_name, last_name, company_name, vat_number, address, phone FROM users WHERE id = $1', [req.user!.id]);
+    const user = userResult.rows[0] || {};
+
+    const html = generateInvoiceHtml(invoice, linesResult.rows, user);
+    res.setHeader('Content-Type', 'text/html');
+    res.send(html);
   } catch (err) { next(err); }
 });
 
@@ -150,6 +197,14 @@ router.delete('/:id', async (req: AuthenticatedRequest, res, next) => {
   try {
     const result = await query('DELETE FROM invoices WHERE id = $1 AND user_id = $2 RETURNING id', [req.params.id, req.user!.id]);
     if (result.rowCount === 0) { res.status(404).json({ error: 'Invoice not found' }); return; }
+    await writeAudit({
+      userId: req.user!.id,
+      entityType: 'invoice',
+      entityId: req.params.id,
+      action: 'delete',
+      ipAddress: req.ip || req.socket.remoteAddress,
+      userAgent: req.headers['user-agent'],
+    });
     res.status(204).send();
   } catch (err) { next(err); }
 });
@@ -178,8 +233,118 @@ router.post('/:id/payments', async (req: AuthenticatedRequest, res, next) => {
       );
     });
 
+    await writeAudit({
+      userId: req.user!.id,
+      entityType: 'invoice',
+      entityId: req.params.id,
+      action: 'payment',
+      newValues: { amount, payment_method, reference },
+      ipAddress: req.ip || req.socket.remoteAddress,
+      userAgent: req.headers['user-agent'],
+    });
+
     res.status(201).json({ success: true });
   } catch (err) { next(err); }
 });
 
 export default router;
+
+function generateInvoiceHtml(invoice: any, lines: any[], user: any): string {
+  const formatCurrency = (v: string | number) => `£${(parseFloat(String(v)) || 0).toFixed(2)}`;
+  const formatDate = (d: string) => d ? new Date(d).toLocaleDateString('en-GB') : '-';
+  const address = (addr: any) => {
+    if (!addr) return '';
+    if (typeof addr === 'string') try { addr = JSON.parse(addr); } catch { return addr; }
+    return [addr.line1, addr.line2, addr.city, addr.postcode, addr.country].filter(Boolean).join('<br>');
+  };
+
+  const lineRows = lines.map((li, i) => `
+    <tr>
+      <td style="padding:8px;border-bottom:1px solid #eee;">${i + 1}</td>
+      <td style="padding:8px;border-bottom:1px solid #eee;">${li.description || ''}</td>
+      <td style="padding:8px;border-bottom:1px solid #eee;text-align:right;">${li.quantity || 1}</td>
+      <td style="padding:8px;border-bottom:1px solid #eee;text-align:right;">${formatCurrency(li.unit_price)}</td>
+      <td style="padding:8px;border-bottom:1px solid #eee;text-align:right;">${formatCurrency(li.amount)}</td>
+    </tr>`).join('');
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Invoice ${invoice.invoice_number}</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 40px; color: #222; }
+    .header { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 32px; }
+    .brand h1 { margin: 0 0 4px; }
+    .meta { text-align: right; }
+    .meta p { margin: 2px 0; }
+    .columns { display: flex; gap: 40px; margin-bottom: 32px; }
+    .box { flex: 1; }
+    .box h3 { margin: 0 0 8px; font-size: 14px; text-transform: uppercase; color: #666; }
+    table { width: 100%; border-collapse: collapse; margin-bottom: 24px; }
+    th { text-align: left; padding: 8px; border-bottom: 2px solid #ccc; font-size: 12px; text-transform: uppercase; color: #666; }
+    td { padding: 8px; }
+    .totals { width: 320px; margin-left: auto; }
+    .totals td { padding: 6px 8px; }
+    .totals tr:last-child td { font-weight: 700; border-top: 2px solid #222; }
+    .footer { margin-top: 40px; font-size: 12px; color: #666; }
+    @media print { body { margin: 20px; } }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="brand">
+      <h1>${user.company_name || `${user.first_name || ''} ${user.last_name || ''}`.trim() || 'Invoice'}</h1>
+      <p>${address(user.address)}</p>
+      ${user.phone ? `<p>${user.phone}</p>` : ''}
+      ${user.vat_number ? `<p>VAT: ${user.vat_number}</p>` : ''}
+    </div>
+    <div class="meta">
+      <h1>Invoice ${invoice.invoice_number}</h1>
+      <p><strong>Status:</strong> ${invoice.status}</p>
+      <p><strong>Issue date:</strong> ${formatDate(invoice.issue_date)}</p>
+      <p><strong>Due date:</strong> ${formatDate(invoice.due_date)}</p>
+    </div>
+  </div>
+
+  <div class="columns">
+    <div class="box">
+      <h3>Bill to</h3>
+      <p><strong>${invoice.client_name || invoice.client_company || 'Client'}</strong></p>
+      <p>${address(invoice.client_address)}</p>
+      ${invoice.client_email ? `<p>${invoice.client_email}</p>` : ''}
+      ${invoice.client_vat ? `<p>VAT: ${invoice.client_vat}</p>` : ''}
+    </div>
+    <div class="box">
+      <h3>Notes</h3>
+      <p>${invoice.notes || ''}</p>
+    </div>
+  </div>
+
+  <table>
+    <thead>
+      <tr><th>#</th><th>Description</th><th style="text-align:right">Qty</th><th style="text-align:right">Unit price</th><th style="text-align:right">Amount</th></tr>
+    </thead>
+    <tbody>
+      ${lineRows || '<tr><td colspan="5" style="color:#999;">No line items</td></tr>'}
+    </tbody>
+  </table>
+
+  <table class="totals">
+    <tr><td>Subtotal</td><td style="text-align:right">${formatCurrency(invoice.subtotal)}</td></tr>
+    ${parseFloat(invoice.discount_amount) > 0 ? `<tr><td>Discount</td><td style="text-align:right">-${formatCurrency(invoice.discount_amount)}</td></tr>` : ''}
+    ${parseFloat(invoice.cis_amount) > 0 ? `<tr><td>CIS</td><td style="text-align:right">-${formatCurrency(invoice.cis_amount)}</td></tr>` : ''}
+    ${parseFloat(invoice.tax_amount) > 0 ? `<tr><td>Tax</td><td style="text-align:right">${formatCurrency(invoice.tax_amount)}</td></tr>` : ''}
+    ${parseFloat(invoice.retention_amount) > 0 ? `<tr><td>Retention</td><td style="text-align:right">-${formatCurrency(invoice.retention_amount)}</td></tr>` : ''}
+    <tr><td>Total</td><td style="text-align:right">${formatCurrency(invoice.total_amount)}</td></tr>
+    <tr><td>Paid</td><td style="text-align:right">${formatCurrency(invoice.amount_paid)}</td></tr>
+    <tr><td>Due</td><td style="text-align:right">${formatCurrency(invoice.amount_due)}</td></tr>
+  </table>
+
+  <div class="footer">
+    ${invoice.terms ? `<p><strong>Terms:</strong> ${invoice.terms}</p>` : ''}
+    <p>Generated by InvoiceSmart</p>
+  </div>
+</body>
+</html>`;
+}

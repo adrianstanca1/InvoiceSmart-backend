@@ -113,10 +113,6 @@ export async function initSchema(): Promise<void> {
     `);
 
     // Multi-tenant fix: invoice numbers must be unique per user, not globally.
-    // The original schema declared `invoice_number VARCHAR(255) UNIQUE`, which
-    // collides the moment two tenants both hit INV-0001. We drop the global
-    // constraint and add a composite one. Both steps are idempotent so this
-    // migration is safe to re-run.
     await client.query(`
       ALTER TABLE invoices DROP CONSTRAINT IF EXISTS invoices_invoice_number_key;
     `);
@@ -224,6 +220,9 @@ export async function initSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_transactions_invoice_id ON transactions(invoice_id);
     `);
     await client.query(`
+      CREATE INDEX IF NOT EXISTS idx_transactions_user_id ON transactions(user_id);
+    `);
+    await client.query(`
       CREATE INDEX IF NOT EXISTS idx_tax_rules_user_id ON tax_rules(user_id);
     `);
     await client.query(`
@@ -235,6 +234,34 @@ export async function initSchema(): Promise<void> {
     await client.query(`
       CREATE INDEX IF NOT EXISTS idx_settings_user_id ON settings(user_id);
     `);
+
+    // Auto-update updated_at triggers
+    await client.query(`
+      CREATE OR REPLACE FUNCTION update_updated_at_column()
+      RETURNS TRIGGER AS $$
+      BEGIN
+        NEW.updated_at = NOW();
+        RETURN NEW;
+      END;
+      $$ language 'plpgsql';
+    `);
+
+    const tablesWithUpdatedAt = ['users', 'clients', 'invoices', 'tax_rules', 'settings'];
+    for (const tbl of tablesWithUpdatedAt) {
+      await client.query(`
+        DO $$
+        BEGIN
+          IF NOT EXISTS (
+            SELECT 1 FROM pg_trigger
+            WHERE tgname = 'trg_${tbl}_updated_at'
+          ) THEN
+            CREATE TRIGGER trg_${tbl}_updated_at
+            BEFORE UPDATE ON ${tbl}
+            FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+          END IF;
+        END$$;
+      `);
+    }
 
     await client.query('COMMIT');
     console.log('Schema initialized successfully');

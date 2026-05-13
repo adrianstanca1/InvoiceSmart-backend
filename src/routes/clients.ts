@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { query } from '../db';
 import { applyUuidValidation, authMiddleware, AuthenticatedRequest } from '../middleware';
+import { writeAudit } from '../lib/audit';
 
 const router = Router();
 router.use(authMiddleware);
@@ -31,19 +32,41 @@ router.post('/', async (req: AuthenticatedRequest, res, next) => {
       'INSERT INTO clients (user_id, name, email, company_name, vat_number, address, phone) VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING *',
       [req.user!.id, name, email || null, company_name || null, vat_number || null, address ? JSON.stringify(address) : null, phone || null]
     );
-    res.status(201).json(result.rows[0]);
+    const client = result.rows[0];
+    await writeAudit({
+      userId: req.user!.id,
+      entityType: 'client',
+      entityId: client.id,
+      action: 'create',
+      newValues: client,
+      ipAddress: req.ip || req.socket.remoteAddress,
+      userAgent: req.headers['user-agent'],
+    });
+    res.status(201).json(client);
   } catch (err) { next(err); }
 });
 
 router.put('/:id', async (req: AuthenticatedRequest, res, next) => {
   try {
     const { name, email, company_name, vat_number, address, phone } = req.body;
+    const existing = await query('SELECT * FROM clients WHERE id = $1 AND user_id = $2', [req.params.id, req.user!.id]);
+    if (existing.rowCount === 0) { res.status(404).json({ error: 'Client not found' }); return; }
     const result = await query(
       'UPDATE clients SET name = $1, email = $2, company_name = $3, vat_number = $4, address = $5, phone = $6, updated_at = NOW() WHERE id = $7 AND user_id = $8 RETURNING *',
       [name, email || null, company_name || null, vat_number || null, address ? JSON.stringify(address) : null, phone || null, req.params.id, req.user!.id]
     );
-    if (result.rowCount === 0) { res.status(404).json({ error: 'Client not found' }); return; }
-    res.json(result.rows[0]);
+    const client = result.rows[0];
+    await writeAudit({
+      userId: req.user!.id,
+      entityType: 'client',
+      entityId: client.id,
+      action: 'update',
+      oldValues: existing.rows[0],
+      newValues: client,
+      ipAddress: req.ip || req.socket.remoteAddress,
+      userAgent: req.headers['user-agent'],
+    });
+    res.json(client);
   } catch (err) { next(err); }
 });
 
@@ -51,6 +74,14 @@ router.delete('/:id', async (req: AuthenticatedRequest, res, next) => {
   try {
     const result = await query('DELETE FROM clients WHERE id = $1 AND user_id = $2 RETURNING id', [req.params.id, req.user!.id]);
     if (result.rowCount === 0) { res.status(404).json({ error: 'Client not found' }); return; }
+    await writeAudit({
+      userId: req.user!.id,
+      entityType: 'client',
+      entityId: req.params.id,
+      action: 'delete',
+      ipAddress: req.ip || req.socket.remoteAddress,
+      userAgent: req.headers['user-agent'],
+    });
     res.status(204).send();
   } catch (err) { next(err); }
 });

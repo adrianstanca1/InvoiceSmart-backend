@@ -48,61 +48,47 @@ function validateSettingValue(key: string, value: unknown): string | null {
       return 'aiEndpoint must be http(s)';
     }
     if (!AI_ENDPOINT_HOST_ALLOWLIST.has(parsed.hostname)) {
-      return `aiEndpoint host not in allowlist: ${parsed.hostname}`;
+      return `AI endpoint host not allowed: ${parsed.hostname}`;
     }
+  }
+  if (key === 'aiApiKey' && typeof value === 'string' && value.length > 0) {
+    if (value.length < 8) return 'aiApiKey too short';
   }
   return null;
 }
 
-router.get('/', async (req: AuthenticatedRequest, res, next) => {
-  try {
-    const result = await query('SELECT * FROM settings WHERE user_id = $1', [req.user!.id]);
-    const rows = result.rows;
-    const obj: Record<string, any> = {};
-    rows.forEach((r: any) => { try { obj[r.key] = JSON.parse(r.value); } catch { obj[r.key] = r.value; } });
-    res.json(maskSensitiveSettings({ ...defaultSettings, ...obj }));
-  } catch (err) { next(err); }
-});
-
-router.post('/', async (req: AuthenticatedRequest, res, next) => {
-  try {
-    const { key, value } = req.body;
-    if (!key) { res.status(400).json({ error: 'key is required' }); return; }
-    const keyErr = validateSettingKey(key);
-    if (keyErr) { res.status(400).json({ error: keyErr }); return; }
-    const valueErr = validateSettingValue(key, value);
-    if (valueErr) { res.status(400).json({ error: valueErr }); return; }
-    const result = await query(
-      `INSERT INTO settings (user_id, key, value) VALUES ($1,$2,$3)
-       ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW() RETURNING *`,
-      [req.user!.id, key, typeof value === 'string' ? value : JSON.stringify(value)]
-    );
-    res.json(maskSensitiveSettingRow(result.rows[0]));
-  } catch (err) { next(err); }
-});
-
-// PUT /api/settings — bulk update
 router.put('/', async (req: AuthenticatedRequest, res, next) => {
   try {
-    const updates = req.body;
-    if (!updates || typeof updates !== 'object' || Array.isArray(updates)) {
-      res.status(400).json({ error: 'Settings update must be an object' });
+    const entries = req.body;
+    if (!entries || typeof entries !== 'object' || Array.isArray(entries)) {
+      res.status(400).json({ error: 'Expected object of key-value pairs' });
       return;
     }
-    // Validate every key + value before writing any of them — bulk update is atomic-ish.
-    for (const [key, value] of Object.entries(updates)) {
+
+    const keys = Object.keys(entries);
+    for (const key of keys) {
       const keyErr = validateSettingKey(key);
       if (keyErr) { res.status(400).json({ error: keyErr }); return; }
-      const valueErr = validateSettingValue(key, value);
-      if (valueErr) { res.status(400).json({ error: valueErr }); return; }
+      const valErr = validateSettingValue(key, entries[key]);
+      if (valErr) { res.status(400).json({ error: valErr }); return; }
     }
-    for (const [key, value] of Object.entries(updates)) {
-      await query(
+
+    const updated: Record<string, any> = {};
+    for (const key of keys) {
+      const value = JSON.stringify(entries[key]);
+      const result = await query(
         `INSERT INTO settings (user_id, key, value) VALUES ($1,$2,$3)
          ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW() RETURNING *`,
-        [req.user!.id, key, typeof value === 'string' ? value : JSON.stringify(value)]
+        [req.user!.id, key, value]
       );
+      updated[key] = result.rows[0];
     }
+    res.json(updated);
+  } catch (err) { next(err); }
+});
+
+router.get('/', async (req: AuthenticatedRequest, res, next) => {
+  try {
     const result = await query('SELECT * FROM settings WHERE user_id = $1', [req.user!.id]);
     const obj: Record<string, any> = {};
     result.rows.forEach((r: any) => { try { obj[r.key] = JSON.parse(r.value); } catch { obj[r.key] = r.value; } });
@@ -115,12 +101,14 @@ router.post('/upload-receipt', async (req: AuthenticatedRequest, res, next) => {
   try {
     const { image } = req.body;
     if (!image) { res.status(400).json({ error: 'No image provided' }); return; }
-    // Store receipt as encoded data in settings for now
+    if (typeof image !== 'string') { res.status(400).json({ error: 'Image must be a base64 string' }); return; }
+    // Limit receipt size to ~2MB base64 to prevent abuse
+    if (image.length > 3_000_000) { res.status(413).json({ error: 'Image too large (max ~2MB)' }); return; }
     const receiptId = `receipt_${Date.now()}`;
     await query(
       `INSERT INTO settings (user_id, key, value) VALUES ($1,$2,$3)
        ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW() RETURNING *`,
-      [req.user!.id, receiptId, JSON.stringify({ image: image.slice(0, 200), timestamp: new Date().toISOString() })]
+      [req.user!.id, receiptId, JSON.stringify({ image, timestamp: new Date().toISOString() })]
     );
     res.json({ id: receiptId, url: '', rawText: '', error: null });
   } catch (err) { next(err); }
