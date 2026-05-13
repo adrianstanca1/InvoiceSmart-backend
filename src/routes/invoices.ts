@@ -130,8 +130,19 @@ router.patch('/:id/paid', async (req: AuthenticatedRequest, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.get('/:id/pdf', async (_req: AuthenticatedRequest, res) => {
-  res.json({ url: 'https://demo.pdf' });
+router.get('/:id/pdf', async (req: AuthenticatedRequest, res, next) => {
+  try {
+    // Ownership check before returning any invoice-derived data.
+    // The current stub returns a placeholder URL; when a real PDF
+    // generator lands, it must use the same WHERE id=$1 AND user_id=$2
+    // pattern (already used by /:id/paid, /:id/payments, DELETE).
+    const result = await query(
+      'SELECT id FROM invoices WHERE id = $1 AND user_id = $2',
+      [req.params.id, req.user!.id]
+    );
+    if (result.rowCount === 0) { res.status(404).json({ error: 'Invoice not found' }); return; }
+    res.json({ url: 'https://demo.pdf' });
+  } catch (err) { next(err); }
 });
 
 router.delete('/:id', async (req: AuthenticatedRequest, res, next) => {

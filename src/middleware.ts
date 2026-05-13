@@ -8,6 +8,15 @@ export interface AuthenticatedRequest extends Request {
   };
 }
 
+// JWT_SECRET fail-closed: in any non-development environment, refuse to start
+// without an explicit secret. The dev fallback is only available when
+// NODE_ENV is 'development' (or unset on a developer's laptop).
+const isDev = !process.env.NODE_ENV || process.env.NODE_ENV === 'development';
+if (!process.env.JWT_SECRET && !isDev) {
+  // eslint-disable-next-line no-console
+  console.error('FATAL: JWT_SECRET is not set in environment (NODE_ENV=' + process.env.NODE_ENV + '). Refusing to start with a known dev secret.');
+  process.exit(1);
+}
 export const JWT_SECRET = process.env.JWT_SECRET || 'invoicesmart-dev-secret-change-in-production';
 
 export function authMiddleware(

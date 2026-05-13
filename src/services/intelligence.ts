@@ -27,12 +27,40 @@ interface AiOverrides {
   apiKey?: string;
 }
 
+// SSRF defense: only allow AI completion against known hostnames.
+// Mirrored in src/routes/settings.ts — keep in sync.
+const AI_ENDPOINT_HOST_ALLOWLIST = new Set([
+  '127.0.0.1', 'localhost',
+  'api.openai.com',
+  'openrouter.ai',
+  'api.openrouter.ai',
+]);
+
+export function assertEndpointAllowed(endpoint: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(endpoint);
+  } catch {
+    throw new Error(`AI endpoint is not a valid URL: ${endpoint}`);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`AI endpoint must use http(s): ${endpoint}`);
+  }
+  if (!AI_ENDPOINT_HOST_ALLOWLIST.has(parsed.hostname)) {
+    throw new Error(`AI endpoint host not allowed: ${parsed.hostname}`);
+  }
+}
+
 export async function resolveAiConfig(userId: string, overrides: AiOverrides = {}): Promise<AiConfig> {
   const settings = await getUserSettings(userId);
   const provider = normalizeProvider(overrides.provider || settings.aiProvider || process.env.AI_PROVIDER || 'ollama');
   const model = overrides.model || settings.aiModel || providerDefaultModel(provider);
   const endpoint = overrides.endpoint || settings.aiEndpoint || providerDefaultEndpoint(provider);
   const apiKey = overrides.apiKey || settings.aiApiKey || providerApiKey(provider);
+
+  // Validate before any caller uses this config to hit the network.
+  // Catches request-body overrides that skip the settings-table allowlist.
+  assertEndpointAllowed(endpoint);
 
   return { provider, model, endpoint, apiKey };
 }

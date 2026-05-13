@@ -6,6 +6,54 @@ import { defaultSettings } from '../services/settings';
 const router = Router();
 router.use(authMiddleware);
 
+// Allowlist of keys that PUT/POST /api/settings may write.
+// Matches the AppSettings interface in services/settings.ts plus
+// the receipt_* and aiApiKey keys used internally. Reject anything
+// else to prevent unbounded per-user row growth and unknown-key
+// injection into downstream services (e.g. aiEndpoint SSRF).
+const SETTINGS_KEY_ALLOWLIST = new Set([
+  'aiProvider', 'aiModel', 'aiEndpoint', 'aiApiKey',
+  'invoicePrefix', 'autoIncrement',
+  'defaultCurrency', 'defaultTaxRate', 'defaultTerms', 'defaultPaymentGateway',
+  'theme', 'notificationsEnabled', 'emailNotifications',
+]);
+
+// Hostname allowlist for aiEndpoint — prevents SSRF where a malicious
+// or compromised user account points the AI completion endpoint at
+// internal services (Redis :6379, Supabase Studio :54323, etc.).
+const AI_ENDPOINT_HOST_ALLOWLIST = new Set([
+  '127.0.0.1', 'localhost',                 // local ollama / LM Studio
+  'api.openai.com',
+  'openrouter.ai',
+  'api.openrouter.ai',
+]);
+
+// Returns error message string, or null if valid.
+function validateSettingKey(key: string): string | null {
+  if (!SETTINGS_KEY_ALLOWLIST.has(key) && !key.startsWith('receipt_')) {
+    return `Unknown settings key: ${key}`;
+  }
+  return null;
+}
+
+function validateSettingValue(key: string, value: unknown): string | null {
+  if (key === 'aiEndpoint' && typeof value === 'string' && value.length > 0) {
+    let parsed: URL;
+    try {
+      parsed = new URL(value);
+    } catch {
+      return 'aiEndpoint must be a valid URL';
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return 'aiEndpoint must be http(s)';
+    }
+    if (!AI_ENDPOINT_HOST_ALLOWLIST.has(parsed.hostname)) {
+      return `aiEndpoint host not in allowlist: ${parsed.hostname}`;
+    }
+  }
+  return null;
+}
+
 router.get('/', async (req: AuthenticatedRequest, res, next) => {
   try {
     const result = await query('SELECT * FROM settings WHERE user_id = $1', [req.user!.id]);
@@ -20,6 +68,10 @@ router.post('/', async (req: AuthenticatedRequest, res, next) => {
   try {
     const { key, value } = req.body;
     if (!key) { res.status(400).json({ error: 'key is required' }); return; }
+    const keyErr = validateSettingKey(key);
+    if (keyErr) { res.status(400).json({ error: keyErr }); return; }
+    const valueErr = validateSettingValue(key, value);
+    if (valueErr) { res.status(400).json({ error: valueErr }); return; }
     const result = await query(
       `INSERT INTO settings (user_id, key, value) VALUES ($1,$2,$3)
        ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW() RETURNING *`,
@@ -36,6 +88,13 @@ router.put('/', async (req: AuthenticatedRequest, res, next) => {
     if (!updates || typeof updates !== 'object' || Array.isArray(updates)) {
       res.status(400).json({ error: 'Settings update must be an object' });
       return;
+    }
+    // Validate every key + value before writing any of them — bulk update is atomic-ish.
+    for (const [key, value] of Object.entries(updates)) {
+      const keyErr = validateSettingKey(key);
+      if (keyErr) { res.status(400).json({ error: keyErr }); return; }
+      const valueErr = validateSettingValue(key, value);
+      if (valueErr) { res.status(400).json({ error: valueErr }); return; }
     }
     for (const [key, value] of Object.entries(updates)) {
       await query(
