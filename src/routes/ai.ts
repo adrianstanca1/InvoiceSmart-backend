@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { query } from '../db';
-import { authMiddleware, AuthenticatedRequest } from '../middleware';
+import { applyUuidValidation, authMiddleware, AuthenticatedRequest } from '../middleware';
 import {
   ChatMessage,
   availableProviders,
@@ -14,6 +14,7 @@ import {
 
 const router = Router();
 router.use(authMiddleware);
+applyUuidValidation(router, ['id']);
 
 router.get('/config', async (req: AuthenticatedRequest, res, next) => {
   try {

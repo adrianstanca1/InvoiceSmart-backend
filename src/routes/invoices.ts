@@ -1,11 +1,12 @@
 import { Router } from 'express';
 import { query, transaction } from '../db';
-import { authMiddleware, AuthenticatedRequest } from '../middleware';
+import { applyUuidValidation, authMiddleware, AuthenticatedRequest } from '../middleware';
 import { calculateInvoiceTotals, generateInvoiceNumber } from '../utils';
 
 const router = Router();
 
 router.use(authMiddleware);
+applyUuidValidation(router, ['id']);
 
 router.get('/', async (req: AuthenticatedRequest, res, next) => {
   try {

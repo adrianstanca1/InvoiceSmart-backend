@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import { query } from '../db';
-import { authMiddleware, AuthenticatedRequest } from '../middleware';
+import { applyUuidValidation, authMiddleware, AuthenticatedRequest } from '../middleware';
 
 const router = Router();
 router.use(authMiddleware);
+applyUuidValidation(router, ['id']);
 
 router.get('/', async (req: AuthenticatedRequest, res, next) => {
   try {

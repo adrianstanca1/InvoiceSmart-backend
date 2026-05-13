@@ -1,4 +1,4 @@
-import { Request, Response, NextFunction } from 'express';
+import { Request, Response, NextFunction, Router } from 'express';
 import * as jwt from 'jsonwebtoken';
 
 export interface AuthenticatedRequest extends Request {
@@ -6,6 +6,24 @@ export interface AuthenticatedRequest extends Request {
     id: string;
     email: string;
   };
+}
+
+const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+// Reject non-UUID values in named path params (e.g. /:id, /:invoiceId).
+// Without this, a malformed UUID reaches Postgres and surfaces as a
+// generic 500 "invalid input syntax for type uuid" — which both
+// leaks DB shape and is the wrong status for a client error.
+export function applyUuidValidation(router: Router, paramNames: string[]): void {
+  for (const name of paramNames) {
+    router.param(name, (req, res, next, value) => {
+      if (typeof value !== 'string' || !UUID_RE.test(value)) {
+        res.status(400).json({ error: `Invalid ${name}: must be a UUID` });
+        return;
+      }
+      next();
+    });
+  }
 }
 
 // JWT_SECRET fail-closed: in any non-development environment, refuse to start

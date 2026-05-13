@@ -1,0 +1,799 @@
+openapi: 3.0.3
+info:
+  title: InvoiceSmart API
+  version: 1.0.0
+  description: |
+    REST API powering the InvoiceSmart iOS app (and any future web client).
+    Multi-tenant: every authenticated request is scoped to the JWT bearer's
+    `user_id`. Cross-tenant reads return 404 (not 403) to avoid leaking
+    existence.
+
+    **Auth**: `POST /api/auth/login` returns a JWT, valid 7 days. Send as
+    `Authorization: Bearer <jwt>` on every protected route. The `/health`
+    and `/api/health` routes are unauthenticated and report DB
+    connectivity for L7 probes.
+
+    **Money** is `DECIMAL(12,2)` server-side and returned as a string
+    (e.g. `"1500.00"`) — clients should `parseFloat` before arithmetic.
+    Rates (`tax_rate`, `discount_rate`, `cis_rate`, `retention_rate`) are
+    percentages, so `20` means 20% — never `0.20`.
+
+servers:
+  - url: https://api.invoicesmart.cortexbuildpro.com
+    description: Production
+  - url: http://127.0.0.1:3008
+    description: Local dev / docker
+
+tags:
+  - name: auth
+  - name: invoices
+  - name: clients
+  - name: transactions
+  - name: tax-rules
+  - name: settings
+  - name: audit-logs
+  - name: reports
+  - name: ai
+  - name: health
+
+security:
+  - bearerAuth: []
+
+paths:
+  /health:
+    get:
+      tags: [health]
+      summary: Top-level health alias (no /api prefix)
+      security: []
+      responses:
+        '200': { description: Healthy, content: { application/json: { schema: { $ref: '#/components/schemas/HealthOk' } } } }
+        '503': { description: DB unreachable, content: { application/json: { schema: { $ref: '#/components/schemas/HealthDegraded' } } } }
+
+  /api/health:
+    get:
+      tags: [health]
+      summary: API-prefixed health check (same body as /health)
+      security: []
+      responses:
+        '200': { description: Healthy, content: { application/json: { schema: { $ref: '#/components/schemas/HealthOk' } } } }
+        '503': { description: DB unreachable }
+
+  /api/auth/register:
+    post:
+      tags: [auth]
+      summary: Register a new user
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterRequest' }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/AuthResponse' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { description: Email already registered }
+
+  /api/auth/login:
+    post:
+      tags: [auth]
+      summary: Exchange email+password for a JWT
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/AuthResponse' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { description: Invalid credentials }
+
+  /api/auth/me:
+    get:
+      tags: [auth]
+      summary: Get current user's profile
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/UserProfile' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { description: User not found }
+
+  /api/clients:
+    get:
+      tags: [clients]
+      summary: List the current user's clients
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/ClientList' } } } }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+    post:
+      tags: [clients]
+      summary: Create a client
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: '#/components/schemas/ClientInput' } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Client' } } } }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /api/clients/{id}:
+    parameters: [{ $ref: '#/components/parameters/UuidPath' }]
+    get:
+      tags: [clients]
+      summary: Get one client
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Client' } } } }
+        '400': { $ref: '#/components/responses/BadUuid' }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [clients]
+      summary: Update a client
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/ClientInput' } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Client' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [clients]
+      summary: Delete a client
+      responses:
+        '204': { description: Deleted }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/invoices:
+    get:
+      tags: [invoices]
+      summary: List invoices (optionally filtered by status)
+      parameters:
+        - in: query
+          name: status
+          schema: { type: string, enum: [draft, sent, partial, paid] }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/InvoiceList' } } } }
+    post:
+      tags: [invoices]
+      summary: Create an invoice (totals computed server-side)
+      description: |
+        Invoice numbers are unique **per user** (composite constraint
+        `(user_id, invoice_number)`). Two tenants both reach `INV-0001`.
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/InvoiceInput' } } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Invoice' } } } }
+
+  /api/invoices/next/number:
+    get:
+      tags: [invoices]
+      summary: Compute the next invoice number for the current user
+      parameters:
+        - { in: query, name: prefix, schema: { type: string, default: INV } }
+        - { in: query, name: autoIncrement, schema: { type: boolean, default: true } }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, properties: { invoiceNumber: { type: string, example: INV-0042 } } }
+
+  /api/invoices/{id}:
+    parameters: [{ $ref: '#/components/parameters/UuidPath' }]
+    get:
+      tags: [invoices]
+      summary: Get an invoice with line items and payments
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/InvoiceFull' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    put:
+      tags: [invoices]
+      summary: Update an invoice (line items are replaced atomically)
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/InvoiceInput' } } } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Invoice' } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+    delete:
+      tags: [invoices]
+      summary: Delete an invoice and its line items + transactions
+      responses:
+        '204': { description: Deleted }
+
+  /api/invoices/{id}/send:
+    parameters: [{ $ref: '#/components/parameters/UuidPath' }]
+    post:
+      tags: [invoices]
+      summary: Mark invoice as sent (sets status=sent + sent_at)
+      responses:
+        '200': { description: OK }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/invoices/{id}/paid:
+    parameters: [{ $ref: '#/components/parameters/UuidPath' }]
+    patch:
+      tags: [invoices]
+      summary: Force-mark an invoice as paid in full
+      description: |
+        Sets `amount_paid = total_amount`, `amount_due = 0`,
+        `status = 'paid'`. Does NOT record a transaction. Use
+        `/payments` instead when you want a transaction record.
+      responses:
+        '200': { description: OK }
+
+  /api/invoices/{id}/pdf:
+    parameters: [{ $ref: '#/components/parameters/UuidPath' }]
+    get:
+      tags: [invoices]
+      summary: Get a signed URL for the invoice PDF
+      description: Currently returns a stub URL — real PDF generation is on the roadmap.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: object, properties: { url: { type: string, format: uri } } }
+
+  /api/invoices/{id}/payments:
+    parameters: [{ $ref: '#/components/parameters/UuidPath' }]
+    post:
+      tags: [invoices]
+      summary: Record a payment against an invoice
+      description: |
+        Atomically inserts a `transactions` row of type=`payment`,
+        recalculates `amount_paid`, `amount_due`, and bumps status
+        to `partial` or `paid` as appropriate.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount]
+              properties:
+                amount: { type: number, minimum: 0.01 }
+                payment_method: { type: string }
+                reference: { type: string }
+                notes: { type: string }
+      responses:
+        '201': { description: Recorded }
+        '400': { description: Invalid amount }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/transactions:
+    get:
+      tags: [transactions]
+      summary: List transactions (filterable by type + date range)
+      parameters:
+        - { in: query, name: type, schema: { type: string, enum: [expense, payment] } }
+        - { in: query, name: startDate, schema: { type: string, format: date } }
+        - { in: query, name: endDate, schema: { type: string, format: date } }
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/TransactionList' } } } }
+    post:
+      tags: [transactions]
+      summary: Record a standalone transaction (typically an expense)
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/TransactionInput' } } } }
+      responses:
+        '201': { description: Created, content: { application/json: { schema: { $ref: '#/components/schemas/Transaction' } } } }
+
+  /api/transactions/invoice/{invoiceId}:
+    parameters:
+      - { in: path, name: invoiceId, required: true, schema: { type: string, format: uuid } }
+    get:
+      tags: [transactions]
+      summary: List transactions linked to one invoice
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { type: array, items: { $ref: '#/components/schemas/Transaction' } } } } }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /api/transactions/{id}:
+    parameters: [{ $ref: '#/components/parameters/UuidPath' }]
+    delete:
+      tags: [transactions]
+      summary: Delete a transaction
+      responses:
+        '204': { description: Deleted }
+
+  /api/tax-rules:
+    get:
+      tags: [tax-rules]
+      summary: List tax rules for the current user
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/TaxRuleList' } } } } }
+    post:
+      tags: [tax-rules]
+      summary: Create a tax rule
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/TaxRuleInput' } } } }
+      responses: { '201': { description: Created } }
+
+  /api/tax-rules/{id}:
+    parameters: [{ $ref: '#/components/parameters/UuidPath' }]
+    put:
+      tags: [tax-rules]
+      summary: Update a tax rule
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/TaxRuleInput' } } } }
+      responses: { '200': { description: OK } }
+    delete:
+      tags: [tax-rules]
+      summary: Delete a tax rule
+      responses: { '204': { description: Deleted } }
+
+  /api/audit-logs:
+    get:
+      tags: [audit-logs]
+      summary: List recent audit log entries for the current user (max 1000)
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/AuditLog' } }
+
+  /api/settings:
+    get:
+      tags: [settings]
+      summary: Get all settings merged with defaults
+      description: Sensitive keys (`aiApiKey`) are masked as `********`.
+      responses:
+        '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Settings' } } } }
+    post:
+      tags: [settings]
+      summary: Upsert a single setting
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [key]
+              properties:
+                key: { type: string, description: 'Must be in the SETTINGS_KEY_ALLOWLIST or start with receipt_' }
+                value: { description: 'Any JSON-serialisable value' }
+      responses:
+        '200': { description: OK }
+        '400': { description: 'Unknown key or SSRF-blocked aiEndpoint' }
+    put:
+      tags: [settings]
+      summary: Bulk update settings (atomic — all-or-nothing)
+      requestBody: { required: true, content: { application/json: { schema: { $ref: '#/components/schemas/Settings' } } } }
+      responses: { '200': { description: OK } }
+
+  /api/settings/upload-receipt:
+    post:
+      tags: [settings]
+      summary: Upload a receipt image (stub)
+      responses: { '200': { description: OK } }
+
+  /api/reports/dashboard:
+    get:
+      tags: [reports]
+      summary: Top-level dashboard summary
+      responses: { '200': { description: OK, content: { application/json: { schema: { $ref: '#/components/schemas/Dashboard' } } } } }
+
+  /api/reports/revenue-trend:
+    get:
+      tags: [reports]
+      summary: Revenue grouped by month
+      parameters:
+        - { in: query, name: start, schema: { type: string, format: date } }
+        - { in: query, name: end, schema: { type: string, format: date } }
+      responses: { '200': { description: OK } }
+
+  /api/reports/profit-loss:
+    get:
+      tags: [reports]
+      summary: Profit-and-loss statement for a period
+      responses: { '200': { description: OK } }
+
+  /api/reports/top-expenses:
+    get:
+      tags: [reports]
+      summary: Top 10 expense categories sorted by amount
+      responses: { '200': { description: OK } }
+
+  /api/reports/tax-estimate:
+    get:
+      tags: [reports]
+      summary: Estimated VAT due in the period
+      responses: { '200': { description: OK } }
+
+  /api/reports/export:
+    get:
+      tags: [reports]
+      summary: Export a report as CSV
+      parameters:
+        - { in: query, name: type, schema: { type: string, enum: [profit-loss, revenue, expenses] } }
+      responses:
+        '200':
+          description: OK
+          content: { text/csv: { schema: { type: string } } }
+
+  /api/reports/revenue-by-client:
+    get:
+      tags: [reports]
+      summary: Revenue grouped by client
+      responses: { '200': { description: OK } }
+
+  /api/reports/summary:
+    get:
+      tags: [reports]
+      summary: Lightweight counts and totals
+      responses: { '200': { description: OK } }
+
+  /api/ai/config:
+    get:
+      tags: [ai]
+      summary: Get the current AI provider configuration
+      responses: { '200': { description: OK } }
+    put:
+      tags: [ai]
+      summary: Update AI provider/model/endpoint/apiKey
+      responses:
+        '200': { description: OK }
+        '400': { description: Unsupported provider }
+
+  /api/ai/test:
+    post:
+      tags: [ai]
+      summary: Send a health-check prompt to the configured provider
+      responses:
+        '200': { description: OK }
+        '502': { description: AI provider unreachable }
+
+  /api/ai/models:
+    get:
+      tags: [ai]
+      summary: List models available from the current provider
+      responses:
+        '200': { description: OK }
+        '502': { description: AI provider unreachable }
+
+  /api/ai/chat:
+    post:
+      tags: [ai]
+      summary: Send a chat message; returns the model's reply
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                message: { type: string, description: Single-turn shortcut }
+                messages: { type: array, items: { type: object, properties: { role: { type: string }, content: { type: string } } } }
+      responses:
+        '200': { description: OK }
+        '400': { description: Missing message }
+        '502': { description: AI provider unreachable }
+
+  /api/ai/generate-invoice:
+    post:
+      tags: [ai]
+      summary: Generate an invoice draft from a natural-language description
+      requestBody: { required: true, content: { application/json: { schema: { type: object, properties: { description: { type: string } } } } } }
+      responses:
+        '200': { description: OK }
+        '400': { description: Missing description }
+        '422': { description: AI response was not valid JSON }
+        '502': { description: AI provider unreachable }
+
+  /api/ai/summarize-pl:
+    get:
+      tags: [ai]
+      summary: AI-augmented P&L summary (falls back to deterministic text)
+      responses: { '200': { description: OK } }
+
+  /api/ai/who-owes-me:
+    get:
+      tags: [ai]
+      summary: List outstanding invoices grouped by client
+      responses: { '200': { description: OK } }
+
+  /api/ai/tax-advice:
+    get:
+      tags: [ai]
+      summary: AI-augmented tax workflow guidance (with deterministic fallback)
+      responses: { '200': { description: OK } }
+
+  /api/ai/audit-invoice/{id}:
+    parameters: [{ $ref: '#/components/parameters/UuidPath' }]
+    get:
+      tags: [ai]
+      summary: AI-augmented audit of a single invoice
+      responses:
+        '200': { description: OK }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    UuidPath:
+      in: path
+      name: id
+      required: true
+      schema: { type: string, format: uuid }
+      description: Must be a valid v4-style UUID; malformed values return 400.
+
+  responses:
+    BadRequest:
+      description: Malformed request body
+      content:
+        application/json:
+          schema: { type: object, properties: { error: { type: string } } }
+    BadUuid:
+      description: Path param was not a UUID
+      content:
+        application/json:
+          schema: { type: object, properties: { error: { type: string, example: 'Invalid id: must be a UUID' } } }
+    Unauthorized:
+      description: Missing or invalid bearer token
+      content:
+        application/json:
+          schema: { type: object, properties: { error: { type: string } } }
+    NotFound:
+      description: Entity not found (or belongs to a different tenant)
+      content:
+        application/json:
+          schema: { type: object, properties: { error: { type: string } } }
+
+  schemas:
+    HealthOk:
+      type: object
+      properties:
+        status: { type: string, example: ok }
+        service: { type: string, example: invoicesmart-api }
+        version: { type: string, example: 1.0.0 }
+        db:
+          type: object
+          properties:
+            connected: { type: boolean }
+            latencyMs: { type: integer }
+        uptimeSec: { type: integer }
+    HealthDegraded:
+      type: object
+      properties:
+        status: { type: string, example: degraded }
+        db: { type: object, properties: { connected: { type: boolean, example: false }, error: { type: string } } }
+
+    RegisterRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string, minLength: 8 }
+        first_name: { type: string }
+        last_name: { type: string }
+        company_name: { type: string }
+        vat_number: { type: string }
+        phone: { type: string }
+        address: { type: object, additionalProperties: true }
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email: { type: string, format: email }
+        password: { type: string }
+    AuthResponse:
+      type: object
+      properties:
+        token: { type: string, description: JWT, example: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9... }
+        user:
+          type: object
+          properties:
+            id: { type: string, format: uuid }
+            email: { type: string, format: email }
+    UserProfile:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        email: { type: string, format: email }
+        first_name: { type: string, nullable: true }
+        last_name: { type: string, nullable: true }
+        company_name: { type: string, nullable: true }
+        vat_number: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+        address: { type: object, nullable: true, additionalProperties: true }
+
+    Client:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        name: { type: string }
+        email: { type: string, nullable: true }
+        company_name: { type: string, nullable: true }
+        vat_number: { type: string, nullable: true }
+        phone: { type: string, nullable: true }
+        address: { type: object, nullable: true }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ClientInput:
+      type: object
+      required: [name]
+      properties:
+        name: { type: string }
+        email: { type: string }
+        company_name: { type: string }
+        vat_number: { type: string }
+        phone: { type: string }
+        address: { type: object }
+    ClientList:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Client' } }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+
+    LineItem:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        description: { type: string }
+        quantity: { type: string, example: '1.0000' }
+        unit_price: { type: string, example: '1500.00' }
+        amount: { type: string, example: '1500.00' }
+        sort_order: { type: integer }
+    LineItemInput:
+      type: object
+      required: [description, unit_price]
+      properties:
+        description: { type: string }
+        quantity: { type: number, default: 1 }
+        unit_price: { type: number }
+
+    Invoice:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        client_id: { type: string, format: uuid, nullable: true }
+        invoice_number: { type: string, example: INV-0001 }
+        status: { type: string, enum: [draft, sent, partial, paid] }
+        issue_date: { type: string, format: date, nullable: true }
+        due_date: { type: string, format: date, nullable: true }
+        sent_at: { type: string, format: date-time, nullable: true }
+        paid_at: { type: string, format: date-time, nullable: true }
+        subtotal: { type: string }
+        tax_rate: { type: string }
+        tax_amount: { type: string }
+        discount_rate: { type: string }
+        discount_amount: { type: string }
+        retention_rate: { type: string }
+        retention_amount: { type: string }
+        cis_rate: { type: string }
+        cis_amount: { type: string }
+        total_amount: { type: string }
+        amount_paid: { type: string }
+        amount_due: { type: string }
+        notes: { type: string, nullable: true }
+        terms: { type: string, nullable: true }
+    InvoiceFull:
+      allOf:
+        - $ref: '#/components/schemas/Invoice'
+        - type: object
+          properties:
+            line_items: { type: array, items: { $ref: '#/components/schemas/LineItem' } }
+            transactions: { type: array, items: { $ref: '#/components/schemas/Transaction' } }
+    InvoiceInput:
+      type: object
+      properties:
+        client_id: { type: string, format: uuid }
+        status: { type: string, enum: [draft, sent, partial, paid] }
+        issue_date: { type: string, format: date }
+        due_date: { type: string, format: date }
+        tax_rate: { type: number, description: percent, example: 20 }
+        discount_rate: { type: number, description: percent, example: 0 }
+        retention_rate: { type: number, description: percent }
+        cis_rate: { type: number, description: percent }
+        invoice_prefix: { type: string, default: INV }
+        auto_increment: { type: boolean, default: true }
+        notes: { type: string }
+        terms: { type: string }
+        line_items: { type: array, items: { $ref: '#/components/schemas/LineItemInput' } }
+    InvoiceList:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Invoice' } }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+
+    Transaction:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        invoice_id: { type: string, format: uuid, nullable: true }
+        type: { type: string, enum: [expense, payment] }
+        amount: { type: string }
+        transaction_date: { type: string, format: date }
+        category: { type: string, nullable: true }
+        description: { type: string, nullable: true }
+        payment_method: { type: string, nullable: true }
+        reference: { type: string, nullable: true }
+        notes: { type: string, nullable: true }
+    TransactionInput:
+      type: object
+      required: [type, amount]
+      properties:
+        invoice_id: { type: string, format: uuid }
+        type: { type: string, enum: [expense, payment] }
+        amount: { type: number, minimum: 0.01 }
+        transaction_date: { type: string, format: date }
+        category: { type: string }
+        description: { type: string }
+        reference: { type: string }
+    TransactionList:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/Transaction' } }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+
+    TaxRule:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        rate: { type: string }
+        type: { type: string, example: vat }
+        country: { type: string, example: GB }
+        is_default: { type: boolean }
+    TaxRuleInput:
+      type: object
+      required: [name, rate]
+      properties:
+        name: { type: string }
+        rate: { type: number, minimum: 0 }
+        type: { type: string, default: vat }
+        country: { type: string }
+        is_default: { type: boolean }
+    TaxRuleList:
+      type: object
+      properties:
+        data: { type: array, items: { $ref: '#/components/schemas/TaxRule' } }
+        pagination: { $ref: '#/components/schemas/Pagination' }
+
+    AuditLog:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        entity_type: { type: string }
+        entity_id: { type: string, format: uuid }
+        action: { type: string }
+        old_values: { type: object, nullable: true }
+        new_values: { type: object, nullable: true }
+        created_at: { type: string, format: date-time }
+
+    Settings:
+      type: object
+      additionalProperties: true
+      properties:
+        aiProvider: { type: string, enum: [ollama, openai, openai-compatible, openrouter] }
+        aiModel: { type: string }
+        aiEndpoint: { type: string }
+        aiApiKey: { type: string, description: Masked as ******** on read }
+        invoicePrefix: { type: string, default: INV- }
+        autoIncrement: { type: boolean, default: true }
+        defaultCurrency: { type: string, default: GBP }
+        defaultTaxRate: { type: number, default: 20 }
+        defaultTerms: { type: string }
+        defaultPaymentGateway: { type: string, default: none }
+        theme: { type: string, enum: [system, light, dark], default: system }
+        notificationsEnabled: { type: boolean }
+        emailNotifications: { type: boolean }
+
+    Dashboard:
+      type: object
+      properties:
+        totalRevenue: { type: number }
+        totalInvoiced: { type: number }
+        totalPaid: { type: number }
+        totalExpenses: { type: number }
+        netProfit: { type: number }
+        invoiceCount: { type: integer }
+        clientCount: { type: integer }
+        overdueCount: { type: integer }
+        outstandingAmount: { type: number }
+
+    Pagination:
+      type: object
+      properties:
+        page: { type: integer }
+        limit: { type: integer }
+        total: { type: integer }
+        totalPages: { type: integer }

@@ -112,6 +112,28 @@ export async function initSchema(): Promise<void> {
         ADD COLUMN IF NOT EXISTS paid_at TIMESTAMP WITH TIME ZONE;
     `);
 
+    // Multi-tenant fix: invoice numbers must be unique per user, not globally.
+    // The original schema declared `invoice_number VARCHAR(255) UNIQUE`, which
+    // collides the moment two tenants both hit INV-0001. We drop the global
+    // constraint and add a composite one. Both steps are idempotent so this
+    // migration is safe to re-run.
+    await client.query(`
+      ALTER TABLE invoices DROP CONSTRAINT IF EXISTS invoices_invoice_number_key;
+    `);
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'invoices_user_id_invoice_number_key'
+        ) THEN
+          ALTER TABLE invoices
+            ADD CONSTRAINT invoices_user_id_invoice_number_key
+            UNIQUE (user_id, invoice_number);
+        END IF;
+      END$$;
+    `);
+
     await client.query(`
       CREATE TABLE IF NOT EXISTS invoice_line_items (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

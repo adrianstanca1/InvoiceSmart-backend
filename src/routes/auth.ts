@@ -2,10 +2,9 @@ import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import { query } from '../db';
-import { validateVAT } from '../utils';
+import { authMiddleware, AuthenticatedRequest, JWT_SECRET } from '../middleware';
 
 const router = Router();
-const JWT_SECRET = process.env.JWT_SECRET || 'invoicesmart-dev-secret-change-in-production';
 
 function signToken(userId: string, email: string) {
   return jwt.sign({ id: userId, email }, JWT_SECRET, { expiresIn: '7d' });
@@ -58,13 +57,12 @@ router.post('/login', async (req, res, next) => {
   } catch (err) { next(err); }
 });
 
-router.get('/me', async (req, res, next) => {
+router.get('/me', authMiddleware, async (req: AuthenticatedRequest, res, next) => {
   try {
-    const auth = req.headers.authorization;
-    if (!auth || !auth.startsWith('Bearer ')) { res.status(401).json({ error: 'Unauthorized' }); return; }
-    const token = auth.substring(7);
-    const decoded = jwt.verify(token, JWT_SECRET) as { id: string; email: string };
-    const result = await query('SELECT id, email, first_name, last_name, company_name, vat_number, address, phone FROM users WHERE id = $1', [decoded.id]);
+    const result = await query(
+      'SELECT id, email, first_name, last_name, company_name, vat_number, address, phone FROM users WHERE id = $1',
+      [req.user!.id]
+    );
     if (result.rowCount === 0) { res.status(404).json({ error: 'User not found' }); return; }
     res.json(result.rows[0]);
   } catch (err) { next(err); }
