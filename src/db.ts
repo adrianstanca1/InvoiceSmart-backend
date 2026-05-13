@@ -119,10 +119,13 @@ export async function initSchema(): Promise<void> {
     await client.query(`
       CREATE TABLE IF NOT EXISTS transactions (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-        invoice_id UUID NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        invoice_id UUID REFERENCES invoices(id) ON DELETE CASCADE,
         type VARCHAR(50) NOT NULL,
         amount DECIMAL(12,2) NOT NULL,
         transaction_date DATE NOT NULL,
+        category VARCHAR(255),
+        description TEXT,
         payment_method VARCHAR(50),
         reference VARCHAR(255),
         notes TEXT,
