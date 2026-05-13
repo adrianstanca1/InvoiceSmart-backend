@@ -18,9 +18,6 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Create non-root user and group
-RUN groupadd -r nodejs && useradd -r -g nodejs node
-
 COPY package*.json ./
 RUN npm ci --omit=dev
 

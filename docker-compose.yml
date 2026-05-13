@@ -1,55 +1,25 @@
-version: '3.8'
+version: "3.8"
 
 services:
-  db:
-    image: postgres:16-alpine
-    container_name: invoicesmart-db
-    environment:
-      POSTGRES_USER: cortexbuild
-      POSTGRES_PASSWORD: ${DB_PASSWORD:-changeme}
-      POSTGRES_DB: invoicesmart
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U cortexbuild -d invoicesmart"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-    restart: unless-stopped
-
-  backend:
+  invoicesmart-backend:
     build:
       context: .
       dockerfile: Dockerfile
+      target: production
     container_name: invoicesmart-backend
-    environment:
-      NODE_ENV: production
-      PORT: 3008
-      DB_HOST: db
-      DB_PORT: 5432
-      DB_USER: cortexbuild
-      DB_NAME: invoicesmart
-      DB_PASSWORD: ${DB_PASSWORD:-changeme}
-      DATABASE_URL: postgresql://cortexbuild:${DB_PASSWORD:-changeme}@db:5432/invoicesmart?sslmode=disable
-      JWT_SECRET: ${JWT_SECRET:-change_me_in_production}
-      OLLAMA_URL: http://host.docker.internal:11434/api/generate
-      CORS_ORIGINS: ${CORS_ORIGINS:-}
     ports:
       - "3008:3008"
-    depends_on:
-      db:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:3008/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - DB_HOST=cortexbuild-postgres
+      # DATABASE_URL, JWT_SECRET & OLLAMA_URL are read from .env
     restart: unless-stopped
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+    networks:
+      - cortexbuild
+    # No db service here; reuse existing PostgreSQL instance
 
-volumes:
-  postgres_data:
+networks:
+  cortexbuild:
+    external: true
