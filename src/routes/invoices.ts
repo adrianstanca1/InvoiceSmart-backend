@@ -12,13 +12,17 @@ router.get('/', async (req: AuthenticatedRequest, res, next) => {
     const status = req.query.status as string | undefined;
     const userId = req.user!.id;
     let sql = 'SELECT * FROM invoices WHERE user_id = $1 ORDER BY created_at DESC';
+    let countSql = 'SELECT COUNT(*)::int as total FROM invoices WHERE user_id = $1';
     const params: any[] = [userId];
+    const countParams: any[] = [userId];
     if (status) {
       sql = 'SELECT * FROM invoices WHERE user_id = $1 AND status = $2 ORDER BY created_at DESC';
       params.push(status);
+      countSql = 'SELECT COUNT(*)::int as total FROM invoices WHERE user_id = $1 AND status = $2';
+      countParams.push(status);
     }
     const result = await query(sql, params);
-    const countRes = await query('SELECT COUNT(*)::int as total FROM invoices WHERE user_id = $1', [userId]);
+    const countRes = await query(countSql, countParams);
     const total = countRes.rows[0]?.total || 0;
     res.json({ data: result.rows, pagination: { page: 1, limit: total, total, totalPages: 1 } });
   } catch (err) { next(err); }
@@ -148,8 +152,8 @@ router.post('/:id/payments', async (req: AuthenticatedRequest, res, next) => {
 
     await transaction(async (client) => {
       await client.query(
-        'INSERT INTO transactions (invoice_id, type, amount, transaction_date, payment_method, reference, notes) VALUES ($1,$2,$3,$4,$5,$6,$7)',
-        [req.params.id, 'payment', amount, new Date().toISOString().slice(0, 10), payment_method || null, reference || null, notes || null]
+        'INSERT INTO transactions (user_id, invoice_id, type, amount, transaction_date, payment_method, reference, notes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+        [req.user!.id, req.params.id, 'payment', amount, new Date().toISOString().slice(0, 10), payment_method || null, reference || null, notes || null]
       );
       const newPaid = (parseFloat(invoice.amount_paid) || 0) + parseFloat(amount);
       const newDue = parseFloat(invoice.total_amount) - newPaid;

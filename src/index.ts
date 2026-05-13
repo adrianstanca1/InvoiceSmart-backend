@@ -35,18 +35,6 @@ const limiter = rateLimit({
 });
 app.use(limiter);
 
-app.use((req, res, next) => {
-  const originalJson = res.json.bind(res);
-  res.json = (body: any) => {
-    if (res.statusCode >= 400) return originalJson(body);
-    if (body && typeof body === 'object' && ('error' in body || 'success' in body)) {
-      return originalJson(body);
-    }
-    return originalJson({ success: true, data: body });
-  };
-  next();
-});
-
 app.use('/api/health', healthRoutes);
 app.use('/api/auth', authRoutes);
 app.use('/api/invoices', invoiceRoutes);
@@ -60,17 +48,6 @@ app.use('/api/ai', aiRoutes);
 
 app.get('/', (_req, res) => {
   res.json({ name: 'InvoiceSmart API', version: '1.0.0' });
-});
-
-app.use((req, res, next) => {
-  const originalJson = res.json.bind(res);
-  res.json = (body: any) => {
-    if (body && typeof body === 'object' && ('error' in body || 'success' in body)) {
-      return originalJson(body);
-    }
-    return originalJson({ success: true, data: body });
-  };
-  next();
 });
 
 app.use(errorHandler);

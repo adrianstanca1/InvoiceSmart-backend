@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { query } from '../db';
 import { authMiddleware, AuthenticatedRequest } from '../middleware';
+import { defaultSettings } from '../services/settings';
 
 const router = Router();
 router.use(authMiddleware);
@@ -11,15 +12,7 @@ router.get('/', async (req: AuthenticatedRequest, res, next) => {
     const rows = result.rows;
     const obj: Record<string, any> = {};
     rows.forEach((r: any) => { try { obj[r.key] = JSON.parse(r.value); } catch { obj[r.key] = r.value; } });
-    const defaults = {
-      aiProvider: 'ollama', aiModel: 'llama3', aiEndpoint: '',
-      invoicePrefix: 'INV-', autoIncrement: true,
-      defaultCurrency: 'GBP', defaultTaxRate: 20,
-      defaultTerms: 'Payment due within 30 days.',
-      defaultPaymentGateway: 'none',
-      theme: 'system', notificationsEnabled: true, emailNotifications: false,
-    };
-    res.json({ ...defaults, ...obj });
+    res.json({ ...defaultSettings, ...obj });
   } catch (err) { next(err); }
 });
 
@@ -40,7 +33,10 @@ router.post('/', async (req: AuthenticatedRequest, res, next) => {
 router.put('/', async (req: AuthenticatedRequest, res, next) => {
   try {
     const updates = req.body;
-    const client = await query('SELECT 1'); // dummy to ensure pool works
+    if (!updates || typeof updates !== 'object' || Array.isArray(updates)) {
+      res.status(400).json({ error: 'Settings update must be an object' });
+      return;
+    }
     for (const [key, value] of Object.entries(updates)) {
       await query(
         `INSERT INTO settings (user_id, key, value) VALUES ($1,$2,$3)
@@ -51,7 +47,7 @@ router.put('/', async (req: AuthenticatedRequest, res, next) => {
     const result = await query('SELECT * FROM settings WHERE user_id = $1', [req.user!.id]);
     const obj: Record<string, any> = {};
     result.rows.forEach((r: any) => { try { obj[r.key] = JSON.parse(r.value); } catch { obj[r.key] = r.value; } });
-    res.json(obj);
+    res.json({ ...defaultSettings, ...obj });
   } catch (err) { next(err); }
 });
 

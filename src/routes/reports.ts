@@ -8,7 +8,7 @@ router.use(authMiddleware);
 router.get('/dashboard', async (req: AuthenticatedRequest, res, next) => {
   try {
     const userId = req.user!.id;
-    const invoices = await query('SELECT COUNT(*)::int as total, SUM(total_amount)::numeric as revenue, SUM(amount_paid)::numeric as paid FROM invoices WHERE user_id = $1', [userId]);
+    const invoices = await query('SELECT COUNT(*)::int as total, COALESCE(SUM(total_amount),0)::numeric as invoiced, COALESCE(SUM(amount_paid),0)::numeric as paid FROM invoices WHERE user_id = $1', [userId]);
     const clients = await query('SELECT COUNT(*)::int as total FROM clients WHERE user_id = $1', [userId]);
     const expenses = await query('SELECT COALESCE(SUM(amount),0)::numeric as total FROM transactions WHERE user_id = $1 AND type = $2', [userId, 'expense']);
     const overdueResult = await query(
@@ -19,14 +19,15 @@ router.get('/dashboard', async (req: AuthenticatedRequest, res, next) => {
       "SELECT COALESCE(SUM(amount_due),0)::numeric as total FROM invoices WHERE user_id = $1 AND status IN ('sent', 'partial', 'draft')",
       [userId]
     );
-    const revenue = parseFloat(invoices.rows[0]?.revenue || '0');
+    const invoiced = parseFloat(invoices.rows[0]?.invoiced || '0');
     const paid = parseFloat(invoices.rows[0]?.paid || '0');
     const expenseTotal = parseFloat(expenses.rows[0]?.total || '0');
     res.json({
-      totalRevenue: revenue,
+      totalRevenue: paid,
+      totalInvoiced: invoiced,
       totalPaid: paid,
       totalExpenses: expenseTotal,
-      netProfit: revenue - expenseTotal,
+      netProfit: paid - expenseTotal,
       invoiceCount: invoices.rows[0]?.total || 0,
       clientCount: clients.rows[0]?.total || 0,
       overdueCount: overdueResult.rows[0]?.total || 0,
@@ -54,7 +55,7 @@ router.get('/profit-loss', async (req: AuthenticatedRequest, res, next) => {
     const userId = req.user!.id;
     const s = (req.query.start as string) || '2020-01-01';
     const e = (req.query.end as string) || '2030-12-31';
-    const income = await query(`SELECT COALESCE(SUM(total_amount), 0)::numeric as total FROM invoices WHERE user_id = $1 AND issue_date BETWEEN $2 AND $3`, [userId, s, e]);
+    const income = await query(`SELECT COALESCE(SUM(amount_paid), 0)::numeric as total FROM invoices WHERE user_id = $1 AND status = 'paid' AND issue_date BETWEEN $2 AND $3`, [userId, s, e]);
     const expenses = await query(`SELECT COALESCE(SUM(amount),0)::numeric as total FROM transactions WHERE user_id = $1 AND type = 'expense' AND transaction_date BETWEEN $2 AND $3`, [userId, s, e]);
     const expenseCats = await query(`SELECT category, COALESCE(SUM(amount),0)::numeric as total FROM transactions WHERE user_id = $1 AND type = 'expense' AND transaction_date BETWEEN $2 AND $3 GROUP BY category`, [userId, s, e]);
     const rev = parseFloat(income.rows[0]?.total || '0');
@@ -106,7 +107,7 @@ router.get('/export', async (req: AuthenticatedRequest, res, next) => {
     const e = end || '2030-12-31';
     let csv = '';
     if (type === 'profit-loss' || !type) {
-      const income = await query(`SELECT COALESCE(SUM(total_amount),0)::numeric as rev FROM invoices WHERE user_id = $1 AND issue_date BETWEEN $2 AND $3`, [userId, s, e]);
+      const income = await query(`SELECT COALESCE(SUM(amount_paid),0)::numeric as rev FROM invoices WHERE user_id = $1 AND status = 'paid' AND issue_date BETWEEN $2 AND $3`, [userId, s, e]);
       const exp = await query(`SELECT COALESCE(SUM(amount),0)::numeric as exp FROM transactions WHERE user_id = $1 AND type = 'expense' AND transaction_date BETWEEN $2 AND $3`, [userId, s, e]);
       const rev = parseFloat(income.rows[0]?.rev || '0');
       const ex = parseFloat(exp.rows[0]?.exp || '0');
@@ -116,7 +117,7 @@ router.get('/export', async (req: AuthenticatedRequest, res, next) => {
       csv = 'Invoice,Amount,Date\n' + result.rows.map((r: any) => `${r.invoice_number},${r.total_amount},${r.issue_date}`).join('\n');
     } else if (type === 'expenses') {
       const result = await query(`SELECT description, amount, transaction_date FROM transactions WHERE user_id = $1 AND type = 'expense' AND transaction_date BETWEEN $2 AND $3`, [userId, s, e]);
-      csv = 'Description,Amount,Date\n' + result.rows.map((r: any) => `"${(r.description || '').replace(/"/g, '\"')}",${r.amount},${r.transaction_date}`).join('\n');
+      csv = 'Description,Amount,Date\n' + result.rows.map((r: any) => `"${(r.description || '').replace(/"/g, '""')}",${r.amount},${r.transaction_date}`).join('\n');
     } else {
       csv = 'Type,Amount\n';
     }

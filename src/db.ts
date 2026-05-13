@@ -106,6 +106,12 @@ export async function initSchema(): Promise<void> {
     `);
 
     await client.query(`
+      ALTER TABLE invoices
+        ADD COLUMN IF NOT EXISTS sent_at TIMESTAMP WITH TIME ZONE,
+        ADD COLUMN IF NOT EXISTS paid_at TIMESTAMP WITH TIME ZONE;
+    `);
+
+    await client.query(`
       CREATE TABLE IF NOT EXISTS invoice_line_items (
         id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
         invoice_id UUID NOT NULL REFERENCES invoices(id) ON DELETE CASCADE,
