@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { query } from '../db';
 import { applyUuidValidation, authMiddleware, AuthenticatedRequest } from '../middleware';
+import { writeAudit } from '../lib/audit';
 
 const router = Router();
 router.use(authMiddleware);
@@ -40,7 +41,17 @@ router.post('/', async (req: AuthenticatedRequest, res, next) => {
       'INSERT INTO transactions (user_id, invoice_id, type, amount, transaction_date, category, description, reference) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',
       [req.user!.id, invoice_id || null, txnType, amount, transaction_date || new Date().toISOString().slice(0, 10), category || null, description || null, reference || null]
     );
-    res.status(201).json(result.rows[0]);
+    const txn = result.rows[0];
+    await writeAudit({
+      userId: req.user!.id,
+      entityType: 'transaction',
+      entityId: txn.id,
+      action: 'create',
+      newValues: txn,
+      ipAddress: req.ip || req.socket.remoteAddress,
+      userAgent: req.headers['user-agent'],
+    });
+    res.status(201).json(txn);
   } catch (err) { next(err); }
 });
 
@@ -58,6 +69,14 @@ router.delete('/:id', async (req: AuthenticatedRequest, res, next) => {
     const txnRes = await query('SELECT id FROM transactions WHERE id = $1 AND user_id = $2', [req.params.id, req.user!.id]);
     if (txnRes.rowCount === 0) { res.status(404).json({ error: 'Transaction not found' }); return; }
     await query('DELETE FROM transactions WHERE id = $1 AND user_id = $2', [req.params.id, req.user!.id]);
+    await writeAudit({
+      userId: req.user!.id,
+      entityType: 'transaction',
+      entityId: req.params.id,
+      action: 'delete',
+      ipAddress: req.ip || req.socket.remoteAddress,
+      userAgent: req.headers['user-agent'],
+    });
     res.status(204).send();
   } catch (err) { next(err); }
 });

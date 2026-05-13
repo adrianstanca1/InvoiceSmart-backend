@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { query } from '../db';
 import { applyUuidValidation, authMiddleware, AuthenticatedRequest } from '../middleware';
+import { writeAudit } from '../lib/audit';
 
 const router = Router();
 router.use(authMiddleware);
@@ -23,19 +24,41 @@ router.post('/', async (req: AuthenticatedRequest, res, next) => {
       'INSERT INTO tax_rules (user_id, name, rate, type, country, is_default) VALUES ($1,$2,$3,$4,$5,$6) RETURNING *',
       [req.user!.id, name, rate, type || 'vat', country || null, is_default || false]
     );
-    res.status(201).json(result.rows[0]);
+    const rule = result.rows[0];
+    await writeAudit({
+      userId: req.user!.id,
+      entityType: 'tax_rule',
+      entityId: rule.id,
+      action: 'create',
+      newValues: rule,
+      ipAddress: req.ip || req.socket.remoteAddress,
+      userAgent: req.headers['user-agent'],
+    });
+    res.status(201).json(rule);
   } catch (err) { next(err); }
 });
 
 router.put('/:id', async (req: AuthenticatedRequest, res, next) => {
   try {
     const { name, rate, type, country, is_default } = req.body;
+    const existing = await query('SELECT * FROM tax_rules WHERE id = $1 AND user_id = $2', [req.params.id, req.user!.id]);
+    if (existing.rowCount === 0) { res.status(404).json({ error: 'Tax rule not found' }); return; }
     const result = await query(
       'UPDATE tax_rules SET name = $1, rate = $2, type = $3, country = $4, is_default = $5, updated_at = NOW() WHERE id = $6 AND user_id = $7 RETURNING *',
       [name, rate, type || 'vat', country || null, is_default || false, req.params.id, req.user!.id]
     );
-    if (result.rowCount === 0) { res.status(404).json({ error: 'Tax rule not found' }); return; }
-    res.json(result.rows[0]);
+    const rule = result.rows[0];
+    await writeAudit({
+      userId: req.user!.id,
+      entityType: 'tax_rule',
+      entityId: rule.id,
+      action: 'update',
+      oldValues: existing.rows[0],
+      newValues: rule,
+      ipAddress: req.ip || req.socket.remoteAddress,
+      userAgent: req.headers['user-agent'],
+    });
+    res.json(rule);
   } catch (err) { next(err); }
 });
 
@@ -43,6 +66,14 @@ router.delete('/:id', async (req: AuthenticatedRequest, res, next) => {
   try {
     const result = await query('DELETE FROM tax_rules WHERE id = $1 AND user_id = $2 RETURNING id', [req.params.id, req.user!.id]);
     if (result.rowCount === 0) { res.status(404).json({ error: 'Tax rule not found' }); return; }
+    await writeAudit({
+      userId: req.user!.id,
+      entityType: 'tax_rule',
+      entityId: req.params.id,
+      action: 'delete',
+      ipAddress: req.ip || req.socket.remoteAddress,
+      userAgent: req.headers['user-agent'],
+    });
     res.status(204).send();
   } catch (err) { next(err); }
 });
