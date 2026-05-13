@@ -15,6 +15,7 @@ import taxRuleRoutes from './routes/taxRules';
 import auditLogRoutes from './routes/auditLogs';
 import settingsRoutes from './routes/settings';
 import reportRoutes from './routes/reports';
+import aiRoutes from './routes/ai';
 
 dotenv.config();
 
@@ -43,6 +44,7 @@ app.use('/api/tax-rules', taxRuleRoutes);
 app.use('/api/audit-logs', auditLogRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/reports', reportRoutes);
+app.use('/api/ai', aiRoutes);
 
 app.get('/', (_req, res) => {
   res.json({ name: 'InvoiceSmart API', version: '1.0.0' });

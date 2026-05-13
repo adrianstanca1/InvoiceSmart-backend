@@ -99,6 +99,26 @@ router.put('/:id', async (req: AuthenticatedRequest, res, next) => {
   } catch (err) { next(err); }
 });
 
+router.post('/:id/send', async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const result = await query("UPDATE invoices SET status = 'sent', sent_at = NOW(), updated_at = NOW() WHERE id = $1 AND user_id = $2 RETURNING id", [req.params.id, req.user!.id]);
+    if (result.rowCount === 0) { res.status(404).json({ error: 'Invoice not found' }); return; }
+    res.json({ success: true, status: 'sent' });
+  } catch (err) { next(err); }
+});
+
+router.patch('/:id/paid', async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const result = await query("UPDATE invoices SET status = 'paid', amount_paid = total_amount, amount_due = 0, paid_at = NOW(), updated_at = NOW() WHERE id = $1 AND user_id = $2 RETURNING *", [req.params.id, req.user!.id]);
+    if (result.rowCount === 0) { res.status(404).json({ error: 'Invoice not found' }); return; }
+    res.json(result.rows[0]);
+  } catch (err) { next(err); }
+});
+
+router.get('/:id/pdf', async (_req: AuthenticatedRequest, res) => {
+  res.json({ url: 'https://demo.pdf' });
+});
+
 router.delete('/:id', async (req: AuthenticatedRequest, res, next) => {
   try {
     const result = await query('DELETE FROM invoices WHERE id = $1 AND user_id = $2 RETURNING id', [req.params.id, req.user!.id]);
