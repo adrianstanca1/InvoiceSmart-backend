@@ -76,14 +76,14 @@ router.put('/', async (req: AuthenticatedRequest, res, next) => {
     const updated: Record<string, any> = {};
     for (const key of keys) {
       const value = JSON.stringify(entries[key]);
-      const result = await query(
+      await query(
         `INSERT INTO settings (user_id, key, value) VALUES ($1,$2,$3)
          ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW() RETURNING *`,
         [req.user!.id, key, value]
       );
-      updated[key] = result.rows[0];
+      updated[key] = entries[key];
     }
-    res.json(updated);
+    res.json({ success: true, settings: updated });
   } catch (err) { next(err); }
 });
 
@@ -93,6 +93,24 @@ router.get('/', async (req: AuthenticatedRequest, res, next) => {
     const obj: Record<string, any> = {};
     result.rows.forEach((r: any) => { try { obj[r.key] = JSON.parse(r.value); } catch { obj[r.key] = r.value; } });
     res.json(maskSensitiveSettings({ ...defaultSettings, ...obj }));
+  } catch (err) { next(err); }
+});
+
+// POST /api/settings — write a single setting by key
+router.post('/', async (req: AuthenticatedRequest, res, next) => {
+  try {
+    const { key, value } = req.body;
+    if (!key || typeof key !== 'string') { res.status(400).json({ error: 'Missing key' }); return; }
+    const keyErr = validateSettingKey(key);
+    if (keyErr) { res.status(400).json({ error: keyErr }); return; }
+    const valErr = validateSettingValue(key, value);
+    if (valErr) { res.status(400).json({ error: valErr }); return; }
+    await query(
+      `INSERT INTO settings (user_id, key, value) VALUES ($1,$2,$3)
+       ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW() RETURNING *`,
+      [req.user!.id, key, JSON.stringify(value)]
+    );
+    res.json({ success: true });
   } catch (err) { next(err); }
 });
 

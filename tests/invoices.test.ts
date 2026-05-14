@@ -105,11 +105,12 @@ describe('invoices', () => {
     expect(parseFloat(res.body.amount_paid)).toBe(200);
   });
 
-  it('GET /api/invoices/:id/pdf returns 200 with a URL (stub)', async () => {
+  it('GET /api/invoices/:id/pdf returns 200 with HTML invoice', async () => {
     const created = await client().post('/api/invoices').set('Authorization', bearer(user)).send({ tax_rate: 0, line_items: [{ description: 'X', quantity: 1, unit_price: 100 }] });
     const res = await client().get(`/api/invoices/${created.body.id}/pdf`).set('Authorization', bearer(user));
     expect(res.status).toBe(200);
-    expect(res.body.url).toMatch(/\.pdf$/);
+    expect(res.headers['content-type']).toMatch(/text\/html/);
+    expect(res.text).toMatch(/<html/);
   });
 
   it('DELETE /api/invoices/:id removes (204)', async () => {

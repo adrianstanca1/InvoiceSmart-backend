@@ -30,9 +30,9 @@ describe('settings', () => {
       invoicePrefix: 'X-', defaultCurrency: 'EUR', defaultTaxRate: 19,
     });
     expect(res.status).toBe(200);
-    expect(res.body.invoicePrefix).toBe('X-');
-    expect(res.body.defaultCurrency).toBe('EUR');
-    expect(res.body.defaultTaxRate).toBe(19);
+    expect(res.body.settings.invoicePrefix).toBe('X-');
+    expect(res.body.settings.defaultCurrency).toBe('EUR');
+    expect(res.body.settings.defaultTaxRate).toBe(19);
   });
 
   it('rejects unknown setting keys (allowlist defence)', async () => {
@@ -50,7 +50,7 @@ describe('settings', () => {
     for (const host of ['http://internal-redis:6379', 'http://cortexbuild-postgres:5432', 'http://supabase-kong:54321']) {
       const res = await client().post('/api/settings').set('Authorization', bearer(user)).send({ key: 'aiEndpoint', value: host });
       expect(res.status).toBe(400);
-      expect(res.body.error).toMatch(/not in allowlist/);
+      expect(res.body.error).toMatch(/host not allowed/);
     }
   });
 
