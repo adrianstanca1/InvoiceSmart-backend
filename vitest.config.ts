@@ -8,7 +8,13 @@ export default defineConfig({
     globalSetup: ['./tests/global-setup.ts'],
     testTimeout: 15000,
     hookTimeout: 30000,
+    // Vitest 4: `test.poolOptions.forks.singleFork` was deprecated.
+    // The serialise-test-files behaviour we need is `fileParallelism: false`
+    // (combined with a single fork). Without this, tests across files
+    // interleave and TRUNCATE-CASCADE in one file's beforeEach can hit
+    // mid-INSERT of another file's test, producing FK violations.
     pool: 'forks',
+    fileParallelism: false,
     poolOptions: {
       forks: { singleFork: true },
     },
