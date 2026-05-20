@@ -28,7 +28,8 @@ jobs:
 
       - name: Comment on major bumps
         if: steps.meta.outputs.update-type == 'version-update:semver-major'
-        run: gh pr comment "$PR_URL" --body ":warning: Major version bump — human review required; auto-merge skipped."
+        run: |
+          gh pr comment "$PR_URL" --body ":warning: Major version bump — human review required; auto-merge skipped."
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
